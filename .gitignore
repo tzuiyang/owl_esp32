@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Editors / IDE
+.vscode/
+.idea/
+*.swp
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Software pipeline outputs
+software/data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Arduino / build artifacts
+build/
+*.bin
+*.elf
+*.map
