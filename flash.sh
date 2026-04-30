@@ -36,7 +36,10 @@ sleep 2
 
 PORT=$(pick_port)
 echo "==> flashing via esptool on $PORT"
-python3 -m esptool --chip esp32s3 --port "$PORT" --baud 460800 \
+# Use the standalone esptool.py on $PATH instead of `python3 -m esptool` so
+# this works regardless of which virtualenv (if any) is active.
+command -v esptool.py >/dev/null || { echo "esptool.py not on PATH; install with 'pip install esptool'"; exit 1; }
+esptool.py --chip esp32s3 --port "$PORT" --baud 460800 \
   --before no-reset --after watchdog-reset \
   write-flash -z \
   0x0     "$BUILD/owl_esp32.ino.bootloader.bin" \
