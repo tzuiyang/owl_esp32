@@ -44,6 +44,57 @@ static const char* AP_PASSWORD = "owlowlowl";   // ≥8 chars for WPA2
 // --------- HTTP server ----------
 static WebServer g_http(80);
 
+// Gallery page served at /. Polls /list every 5 s so new photos appear
+// without a manual reload. The script builds DOM nodes via textContent
+// and encodeURIComponent — never innerHTML — so a stray filename on the
+// SD can't inject script.
+static const char INDEX_HTML[] = R"HTML(<!doctype html>
+<html><head><meta charset="utf-8"><title>owl</title>
+<style>
+ body{font:14px/1.4 system-ui,sans-serif;margin:1.5em;background:#0a0a0a;color:#eee}
+ h1{font-size:1.1em;font-weight:600;margin:0 0 .8em}
+ #count{opacity:.6;font-weight:400}
+ .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.6em}
+ .grid a{display:block;border:1px solid #222;background:#111;text-decoration:none;color:#9cf}
+ .grid a:hover{background:#1a1a2a;border-color:#345}
+ .grid img{display:block;width:100%;height:auto;background:#000}
+ .grid .name{padding:.4em .5em;font-family:ui-monospace,monospace;font-size:.8em;text-align:center}
+ .empty{opacity:.5;font-style:italic}
+</style></head><body>
+<h1>owl gallery <span id="count"></span></h1>
+<div id="g" class="grid"></div>
+<script>
+async function refresh(){
+  try{
+    const r = await fetch('/list', {cache:'no-store'});
+    const names = await r.json();
+    document.getElementById('count').textContent = '(' + names.length + ')';
+    const g = document.getElementById('g');
+    g.replaceChildren();
+    if(!names.length){
+      const d = document.createElement('div');
+      d.className = 'empty';
+      d.textContent = 'no photos yet — short-press BOOT to capture';
+      g.appendChild(d);
+      return;
+    }
+    for(const n of names){
+      const url = '/photo/' + encodeURIComponent(n);
+      const a = document.createElement('a');
+      a.href = url; a.target = '_blank';
+      const img = document.createElement('img');
+      img.src = url; img.loading = 'lazy'; img.alt = n;
+      const cap = document.createElement('div');
+      cap.className = 'name'; cap.textContent = n;
+      a.appendChild(img); a.appendChild(cap);
+      g.appendChild(a);
+    }
+  }catch(e){}
+}
+refresh(); setInterval(refresh, 5000);
+</script></body></html>
+)HTML";
+
 // --------- LED heartbeat (non-blocking) ----------
 // Idle pattern when AP is up: 100 ms on, 1900 ms off. Implemented in loop()
 // via millis() so it doesn't block button reads or future HTTP handling.
@@ -306,10 +357,9 @@ void setup() {
                   AP_SSID, apIP.toString().c_str());
   }
 
-  // HTTP routes. /photo/<name> + gallery HTML arrive in Steps 5–6;
-  // audio support and the combined-list shape arrive in Step 8.
+  // HTTP routes. Audio support and combined-list shape arrive in Step 8.
   g_http.on("/", []() {
-    g_http.send(200, "text/plain", "owl_esp32 ready\n");
+    g_http.send(200, "text/html", INDEX_HTML);
   });
   g_http.on("/list", []() {
     String body = "[";
@@ -334,6 +384,32 @@ void setup() {
     }
     body += "]";
     g_http.send(200, "application/json", body);
+  });
+  // /photo/<name> — stream a single JPEG. Reject any name containing '/' or
+  // '..' so the lookup can't escape /photos/.
+  g_http.onNotFound([]() {
+    static const String prefix = "/photo/";
+    String uri = g_http.uri();
+    if (!uri.startsWith(prefix)) {
+      g_http.send(404, "text/plain", "not found\n");
+      return;
+    }
+    String name = uri.substring(prefix.length());
+    if (name.length() == 0 ||
+        name.indexOf('/')  >= 0 ||
+        name.indexOf("..") >= 0) {
+      g_http.send(404, "text/plain", "not found\n");
+      return;
+    }
+    String full = String(PHOTOS_DIR) + "/" + name;
+    File f = SD_MMC.open(full, FILE_READ);
+    if (!f || f.isDirectory()) {
+      if (f) f.close();
+      g_http.send(404, "text/plain", "no such photo\n");
+      return;
+    }
+    g_http.streamFile(f, "image/jpeg");
+    f.close();
   });
   g_http.begin();
   Serial.println("[http] listening on :80");
