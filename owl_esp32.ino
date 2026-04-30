@@ -306,10 +306,34 @@ void setup() {
                   AP_SSID, apIP.toString().c_str());
   }
 
-  // Minimal HTTP server — Step 3. Real routes (/list, /photo/<name>) arrive
-  // in Steps 4–6.
+  // HTTP routes. /photo/<name> + gallery HTML arrive in Steps 5–6;
+  // audio support and the combined-list shape arrive in Step 8.
   g_http.on("/", []() {
     g_http.send(200, "text/plain", "owl_esp32 ready\n");
+  });
+  g_http.on("/list", []() {
+    String body = "[";
+    bool first = true;
+    File dir = SD_MMC.open(PHOTOS_DIR);
+    if (dir && dir.isDirectory()) {
+      for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+        if (!f.isDirectory()) {
+          String name = f.name();
+          int slash = name.lastIndexOf('/');
+          if (slash >= 0) name = name.substring(slash + 1);
+          if (name.startsWith("img_") && name.endsWith(".jpg")) {
+            if (!first) body += ",";
+            body += "\"";
+            body += name;
+            body += "\"";
+            first = false;
+          }
+        }
+        f.close();
+      }
+    }
+    body += "]";
+    g_http.send(200, "application/json", body);
   });
   g_http.begin();
   Serial.println("[http] listening on :80");
