@@ -55,10 +55,14 @@ static const char INDEX_HTML[] = R"HTML(<!doctype html>
  h1{font-size:1.1em;font-weight:600;margin:0 0 .8em}
  #count{opacity:.6;font-weight:400}
  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.6em}
- .grid a{display:block;border:1px solid #222;background:#111;text-decoration:none;color:#9cf}
- .grid a:hover{background:#1a1a2a;border-color:#345}
- .grid img{display:block;width:100%;height:auto;background:#000}
- .grid .name{padding:.4em .5em;font-family:ui-monospace,monospace;font-size:.8em;text-align:center}
+ .card{position:relative;border:1px solid #222;background:#111}
+ .card:hover{background:#1a1a2a;border-color:#345}
+ .card a{display:block;text-decoration:none;color:#9cf}
+ .card img{display:block;width:100%;height:auto;background:#000}
+ .card .name{padding:.4em .5em;font-family:ui-monospace,monospace;font-size:.8em;text-align:center}
+ .card .del{position:absolute;top:.3em;right:.3em;width:1.6em;height:1.6em;border:0;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:.9em;cursor:pointer;opacity:0;transition:opacity .15s}
+ .card:hover .del{opacity:1}
+ .card .del:hover{background:#a33}
  .empty{opacity:.5;font-style:italic}
 </style></head><body>
 <h1>owl gallery <span id="count"></span></h1>
@@ -80,6 +84,8 @@ async function refresh(){
     }
     for(const n of names){
       const url = '/photo/' + encodeURIComponent(n);
+      const card = document.createElement('div');
+      card.className = 'card';
       const a = document.createElement('a');
       a.href = url; a.target = '_blank';
       const img = document.createElement('img');
@@ -87,7 +93,23 @@ async function refresh(){
       const cap = document.createElement('div');
       cap.className = 'name'; cap.textContent = n;
       a.appendChild(img); a.appendChild(cap);
-      g.appendChild(a);
+      const del = document.createElement('button');
+      del.className = 'del';
+      del.type = 'button';
+      del.title = 'delete';
+      del.textContent = '✕';
+      del.addEventListener('click', async (e) => {
+        e.preventDefault(); e.stopPropagation();
+        if(!confirm('Delete ' + n + '?')) return;
+        del.disabled = true;
+        try{
+          const r = await fetch(url, {method:'DELETE'});
+          if(r.ok){ card.remove(); document.getElementById('count').textContent = '(' + (g.children.length) + ')'; }
+          else { alert('delete failed: HTTP ' + r.status); del.disabled = false; }
+        }catch(err){ alert('delete failed: ' + err); del.disabled = false; }
+      });
+      card.appendChild(a); card.appendChild(del);
+      g.appendChild(card);
     }
   }catch(e){}
 }
@@ -385,8 +407,8 @@ void setup() {
     body += "]";
     g_http.send(200, "application/json", body);
   });
-  // /photo/<name> — stream a single JPEG. Reject any name containing '/' or
-  // '..' so the lookup can't escape /photos/.
+  // /photo/<name> — GET streams a single JPEG, DELETE removes it from SD.
+  // Reject any name containing '/' or '..' so the lookup can't escape /photos/.
   g_http.onNotFound([]() {
     static const String prefix = "/photo/";
     String uri = g_http.uri();
@@ -402,14 +424,32 @@ void setup() {
       return;
     }
     String full = String(PHOTOS_DIR) + "/" + name;
-    File f = SD_MMC.open(full, FILE_READ);
-    if (!f || f.isDirectory()) {
-      if (f) f.close();
-      g_http.send(404, "text/plain", "no such photo\n");
-      return;
+
+    HTTPMethod m = g_http.method();
+    if (m == HTTP_GET) {
+      File f = SD_MMC.open(full, FILE_READ);
+      if (!f || f.isDirectory()) {
+        if (f) f.close();
+        g_http.send(404, "text/plain", "no such photo\n");
+        return;
+      }
+      g_http.streamFile(f, "image/jpeg");
+      f.close();
+    } else if (m == HTTP_DELETE) {
+      if (!SD_MMC.exists(full)) {
+        g_http.send(404, "text/plain", "no such photo\n");
+        return;
+      }
+      if (SD_MMC.remove(full)) {
+        Serial.printf("[photo] deleted %s\n", full.c_str());
+        g_http.send(204, "text/plain", "");
+      } else {
+        Serial.printf("[photo] delete failed %s\n", full.c_str());
+        g_http.send(500, "text/plain", "delete failed\n");
+      }
+    } else {
+      g_http.send(405, "text/plain", "method not allowed\n");
     }
-    g_http.streamFile(f, "image/jpeg");
-    f.close();
   });
   g_http.begin();
   Serial.println("[http] listening on :80");
