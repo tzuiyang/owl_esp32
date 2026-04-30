@@ -11,6 +11,7 @@
 #include <FS.h>
 #include <SD_MMC.h>
 #include <ESP_I2S.h>
+#include <WiFi.h>
 #include "esp_camera.h"
 #include "camera_pins.h"
 
@@ -34,6 +35,18 @@ static const int PDM_DATA = 41;
 // --------- Photo state ----------
 static const char* PHOTOS_DIR = "/photos";
 static uint32_t    g_nextPhotoId = 1;
+
+// --------- WiFi AP ----------
+static const char* AP_SSID     = "owl";
+static const char* AP_PASSWORD = "owlowlowl";   // ≥8 chars for WPA2
+
+// --------- LED heartbeat (non-blocking) ----------
+// Idle pattern when AP is up: 100 ms on, 1900 ms off. Implemented in loop()
+// via millis() so it doesn't block button reads or future HTTP handling.
+static const uint32_t LED_HB_ON_MS  = 100;
+static const uint32_t LED_HB_OFF_MS = 1900;
+static uint32_t       g_ledHbT      = 0;
+static bool           g_ledHbOn     = false;
 
 // --------- Button debounce / press tracking ----------
 static int      g_btnStable    = HIGH;
@@ -68,6 +81,19 @@ static void haltBlinking(uint32_t periodMs) {
   while (true) {
     digitalWrite(PIN_LED, !digitalRead(PIN_LED));
     delay(periodMs);
+  }
+}
+
+// Non-blocking heartbeat. Call from loop() every iteration; toggles the LED
+// on the LED_HB_ON_MS / LED_HB_OFF_MS schedule. ledFlash() interrupts this
+// briefly during photo captures; the heartbeat resumes on the next tick.
+static void ledHeartbeatTick() {
+  uint32_t now = millis();
+  uint32_t target = g_ledHbOn ? LED_HB_ON_MS : LED_HB_OFF_MS;
+  if (now - g_ledHbT >= target) {
+    g_ledHbT  = now;
+    g_ledHbOn = !g_ledHbOn;
+    digitalWrite(PIN_LED, g_ledHbOn ? LED_ON_LEVEL : LED_OFF_LEVEL);
   }
 }
 
@@ -266,6 +292,16 @@ void setup() {
   scanNextPhotoId();
   Serial.printf("[photos] resuming at img_%06u.jpg\n", (unsigned)g_nextPhotoId);
 
+  // Bring up the WiFi AP. Failure is non-fatal — photos still work offline.
+  WiFi.mode(WIFI_AP);
+  if (!WiFi.softAP(AP_SSID, AP_PASSWORD)) {
+    Serial.println("[wifi] softAP failed - continuing without AP");
+  } else {
+    IPAddress apIP = WiFi.softAPIP();
+    Serial.printf("[wifi] AP up: SSID=%s IP=%s\n",
+                  AP_SSID, apIP.toString().c_str());
+  }
+
   Serial.println("ready - short-press BOOT for photo "
                  "(long-press reserved for audio in TODO step 8)");
 }
@@ -300,8 +336,9 @@ void loop() {
   if (g_btnStable == LOW && !g_longFired &&
       (now - g_btnPressedAt) >= LONG_PRESS_MS) {
     g_longFired = true;
-    Serial.println("[boot] long-press detected (no action in Step 1)");
+    Serial.println("[boot] long-press detected (no action until TODO step 8)");
   }
 
+  ledHeartbeatTick();
   delay(5);
 }
