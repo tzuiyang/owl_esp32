@@ -286,6 +286,15 @@ static void scanNextPhotoId() {
 }
 
 static void captureOnePhoto() {
+  // With CAMERA_GRAB_WHEN_EMPTY + fb_count=1 the DMA stops once the buffer
+  // is filled, so the next fb_get returns whatever was captured at the
+  // *previous* press — stale by however long ago that was. Drop two frames
+  // first to flush the buffer and let AEC/AWB settle on the current scene.
+  for (int i = 0; i < 2; ++i) {
+    camera_fb_t* drop = esp_camera_fb_get();
+    if (drop) esp_camera_fb_return(drop);
+  }
+
   camera_fb_t* fb = esp_camera_fb_get();
   if (!fb) {
     Serial.println("[photo] fb_get failed");
