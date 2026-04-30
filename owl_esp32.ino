@@ -13,6 +13,7 @@
 #include <ESP_I2S.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <ESPmDNS.h>
 #include "esp_camera.h"
 #include "camera_pins.h"
 
@@ -122,7 +123,7 @@ function makePhotoCard(n, recountFn){
 function makeAudioCard(n, recountFn){
   const url = '/audio/' + encodeURIComponent(n);
   const card = document.createElement('div'); card.className='card';
-  const player = document.createElement('audio'); player.controls=true; player.preload='none'; player.src=url;
+  const player = document.createElement('audio'); player.controls=true; player.preload='metadata'; player.src=url;
   card.appendChild(player); card.appendChild(makeMeta(card, url, n, recountFn));
   return card;
 }
@@ -290,6 +291,11 @@ static void scanNextAudioId() {
 
 static void recordingStart() {
   if (g_recording) return;
+  if (g_nextAudioId > 999999) {
+    Serial.println("[audio] counter exhausted (rec_999999.wav) - refusing to start");
+    ledStrobe(5, 100);
+    return;
+  }
   char path[64];
   snprintf(path, sizeof(path), "%s/rec_%06u.wav",
            AUDIO_DIR, (unsigned)g_nextAudioId);
@@ -398,6 +404,11 @@ static void scanNextPhotoId() {
 }
 
 static void captureOnePhoto() {
+  if (g_nextPhotoId > 999999) {
+    Serial.println("[photo] counter exhausted (img_999999.jpg) - refusing to write");
+    ledStrobe(5, 100);
+    return;
+  }
   // With CAMERA_GRAB_WHEN_EMPTY + fb_count=1 the DMA stops once the buffer
   // is filled, so the next fb_get returns whatever was captured at the
   // *previous* press — stale by however long ago that was. Drop two frames
@@ -510,6 +521,12 @@ void setup() {
     IPAddress apIP = WiFi.softAPIP();
     Serial.printf("[wifi] AP up: SSID=%s IP=%s\n",
                   AP_SSID, apIP.toString().c_str());
+    if (MDNS.begin("owl")) {
+      MDNS.addService("http", "tcp", 80);
+      Serial.println("[mdns] http://owl.local/");
+    } else {
+      Serial.println("[mdns] start failed");
+    }
   }
 
   // HTTP routes. Audio support and combined-list shape arrive in Step 8.
