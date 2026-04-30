@@ -1,5 +1,28 @@
 # TODO — `snapshot` branch: still-photo + WiFi-AP firmware
 
+> **Status: complete.** All 10 steps were implemented and verified on hardware. This document is preserved as the design narrative. See `README.md` for end-user docs.
+
+| Step | What | Status |
+| --- | --- | --- |
+| 1 | Single-shot photo, drop MSC + recording state machine | ✅ |
+| 2 | WiFi AP `owl` at boot, LED heartbeat | ✅ |
+| 3 | Minimal HTTP server (root → "owl_esp32 ready") | ✅ |
+| 4 | `GET /list` returns JSON of photo filenames | ✅ |
+| 5 | `GET /photo/<name>` streams JPEG, with path-traversal guard | ✅ |
+| 6 | HTML gallery at `/`, 5 s polling, lazy-loaded thumbs | ✅ |
+| 7 | mDNS → `owl.local` | ✅ |
+| 8 | Long-press BOOT toggles audio recording, gallery shows audio | ✅ |
+| 9 | Polish — counter caps, LED patterns, fault halts | ✅ |
+| 10 | Documentation pass (this file + README rewrite) | ✅ |
+
+**Bonus, not in original plan:**
+- Per-file delete (`DELETE /photo/<name>`, `DELETE /audio/<name>`) + `✕` button on cards.
+- Per-file download (`↓` button using HTML5 `download` attribute).
+- Photo stale-frame fix (drop two frames before each capture so the snapshot reflects current scene, not last press).
+- `flash.sh` switched to standalone `esptool.py` so it works regardless of which Python venv is active.
+
+---
+
 Goal: replace the always-on audio+image recorder with a "press BOOT to take a single JPEG, long-press to start/stop audio recording, download both from a self-hosted WiFi AP" flow.
 
 ## Target user flow

@@ -1,37 +1,37 @@
-# owl_esp32
+# owl_esp32 — `snapshot` branch
 
-`owl_esp32` is an end-to-end wearable recorder prototype for the Seeed XIAO ESP32-S3 Sense. The firmware records slow-FPS camera frames and microphone audio to a microSD card; the Python software pipeline turns those session folders into a best face crop, an audio transcript, and a local SQLite people/encounters database.
+This branch is a **standalone WiFi photo + audio device**, not the multi-session recorder on `main`. The firmware:
 
-## What Gets Captured
+- Captures a single SVGA JPEG when you **short-press BOOT**.
+- Toggles a 16 kHz mono WAV recording when you **long-press BOOT** (≥ 2.5 s).
+- Hosts its own WiFi access point named **`owl`** (password **`owlowlowl`**).
+- Serves a thumbnail gallery + inline audio player at **`http://owl.local/`** so any phone or laptop joined to the AP can browse, download, or delete files.
 
-- Video frame data is stored as individual JPEG images, not as a video file.
-- Audio is stored as 16 kHz, 16-bit mono WAV.
-- Each recording session is written to a separate folder on the microSD card.
+There's no session-folder layout, no Python face/transcription pipeline, and no USB Mass Storage mode on this branch — those live on `main`.
 
-Expected SD layout:
+## What gets stored on the SD
 
 ```text
-/2026-04-22_001/
-  image/
-    img_000001.jpg
-    img_000002.jpg
-    ...
-  audio/
-    rec_001.wav
+/photos/
+  img_000001.jpg
+  img_000002.jpg
+  ...
+/audio/
+  rec_000001.wav
+  rec_000002.wav
+  ...
 ```
 
-The date in the folder name is the firmware compile date, not real wall-clock time.
+Counters are persistent: at boot the firmware scans each directory and resumes from `max(existing) + 1`. Capped at `999999` per kind.
 
-## Hardware Required
+## Hardware required
 
 - Seeed XIAO ESP32-S3 Sense with camera, microphone, and microSD expansion board.
-- microSD card, 32 GB or smaller, formatted FAT32.
+- microSD card, **≤ 32 GB, FAT32**.
 - USB-C cable that supports data.
-- macOS or Linux development machine with Python 3 and Arduino tooling.
+- macOS or Linux dev machine with `arduino-cli` and `esptool` for flashing.
 
-## Firmware Setup
-
-Install the ESP32 Arduino core:
+## Firmware setup
 
 ```bash
 brew install arduino-cli
@@ -43,202 +43,108 @@ arduino-cli core update-index
 arduino-cli core install esp32:esp32@3.3.8
 ```
 
-Flash the board from the repo root:
+Flash:
 
 ```bash
 ./flash.sh
 ```
 
-The required board target is:
+Required board target (`flash.sh` sets this automatically):
 
 ```text
 esp32:esp32:XIAO_ESP32S3:PSRAM=opi,PartitionScheme=default_8MB,USBMode=default,CDCOnBoot=default
 ```
 
-`PSRAM=opi` is required for camera framebuffers. `USBMode=default` is required for USB Mass Storage mode.
+`PSRAM=opi` is required for camera framebuffers + WiFi co-existence.
 
-## Recording Workflow
+## Connect & download
 
-1. Insert the FAT32 microSD card.
-2. Power the board over USB.
-3. Open a serial monitor if you want logs (see [Serial Monitor](#serial-monitor) below).
-4. Short-press BOOT once to start recording.
-5. Speak and point the camera at a test subject.
-6. Short-press BOOT again to stop recording.
-7. Confirm the serial log shows image writes and a closed WAV file.
+1. Insert a FAT32 microSD card and power the board over USB.
+2. Wait for the LED to start a slow heartbeat (~1 s on, 2 s off) — that's the AP being up.
+3. On your Mac/phone, join the WiFi network **`owl`** with password **`owlowlowl`**.
+   - Your device will say "Connected, no internet" — correct, the AP has no upstream.
+4. Open **`http://owl.local/`** in a browser. (Or `http://192.168.4.1/` if mDNS isn't working.)
+5. Press BOOT on the device — within ~5 s the new photo appears in the gallery. Hover any card to reveal **↓** (download) and **✕** (delete) buttons.
 
-During recording:
+For raw curl access:
 
-- Audio is continuously appended to `audio/rec_001.wav`.
-- One JPEG frame is written to `image/` every 2 seconds.
-- Each JPEG is closed immediately after writing.
-- The WAV header is finalized when recording stops.
+```bash
+curl http://owl.local/list                                # JSON of all files
+curl -o test.jpg http://owl.local/photo/img_000001.jpg    # download a photo
+curl -o test.wav http://owl.local/audio/rec_000001.wav    # download a recording
+curl -X DELETE http://owl.local/photo/img_000001.jpg      # delete one
+```
 
-## LED Indicators
+## Buttons
 
-The single onboard LED is the only visual feedback. Use it to diagnose state without a serial monitor.
-
-**Recorder mode**
-
-| LED pattern | Meaning |
+| Gesture | Action |
 | --- | --- |
-| Off | Booted and idle. Ready to record. |
-| Solid on | Recording in progress. |
-| Fast strobe (~10 Hz, ~1 s burst) | Long-press acknowledged. Rebooting into flash-drive mode. |
+| Short-press BOOT (< 2.5 s) | Capture one JPEG to `/photos/`. |
+| Long-press BOOT (≥ 2.5 s) | Toggle audio recording to `/audio/`. First long-press starts; next stops. |
 
-**Flash-drive (MSC) mode**
+You can short-press to capture a photo while audio recording is in progress — both subsystems stay independent.
 
-| LED pattern | Meaning |
+## LED indicators
+
+| Pattern | Meaning |
 | --- | --- |
-| Slow heartbeat (100 ms on, 900 ms off) | MSC active. SD card exposed over USB. Short-press BOOT to return to recorder mode. |
+| Off | Booting before AP comes up. |
+| Slow heartbeat (100 ms on, 1900 ms off) | Idle — AP is up, ready for input. |
+| Single 100 ms blink | Photo captured successfully (overlays heartbeat or recording). |
+| Solid on | Audio recording in progress. |
+| 5× 50 ms strobe | Capture or write error (camera, SD, or WAV). HTTP server stays up. |
 
-**Permanent fault — LED blinks forever and the board never advances**
+**Permanent fault — LED blinks forever and the firmware never serves**
 
 | Blink rate | What failed |
 | --- | --- |
-| ~4 Hz (toggles every 120 ms) | SD card mount failed. Check that the card is inserted, ≤ 32 GB, and FAT32. |
-| ~1.2 Hz (toggles every 400 ms) | Camera init failed. Check the camera ribbon cable seating. |
-| ~0.7 Hz (toggles every 700 ms) | Microphone (PDM I2S) init failed. |
+| ~4 Hz (toggles every 120 ms) | SD mount or `/photos`/`/audio` mkdir failed. Card present and FAT32? |
+| ~1.2 Hz (toggles every 400 ms) | Camera init failed. Re-seat the camera ribbon cable. |
+| ~0.7 Hz (toggles every 700 ms) | PDM mic init failed. |
 
-If you see a fault pattern, power-cycle the board after fixing the underlying issue.
+## Serial monitor
 
-## Serial Monitor
-
-The firmware logs at **115200 baud** over USB CDC. The board appears as `/dev/cu.usbmodem*` on macOS or `/dev/ttyACM*` on Linux.
-
-Find the port:
+The firmware logs at **115200 baud** over USB CDC.
 
 ```bash
-ls /dev/cu.usbmodem*        # macOS
-ls /dev/ttyACM*             # Linux
-```
-
-Open the monitor with `arduino-cli` (already installed for flashing):
-
-```bash
+ls /dev/cu.usbmodem*                                          # macOS
 arduino-cli monitor -p /dev/cu.usbmodem101 -c baudrate=115200
 ```
 
-Replace `/dev/cu.usbmodem101` with whatever path `ls` printed. Exit with `Ctrl-C`.
+(Replace the port with whatever `ls` printed. Exit with Ctrl-C.)
 
-Alternatives:
+Useful boot-time markers:
 
-- **`screen`** (preinstalled on macOS): `screen /dev/cu.usbmodem101 115200` — exit with `Ctrl-A` then `K` then `y`.
-- **VS Code / Arduino IDE**: open the built-in Serial Monitor and set the baud rate to 115200.
-
-If the port disappears mid-session, the board likely rebooted into USB Mass Storage mode (long-press BOOT). The serial port comes back after another reboot into recorder mode.
-
-## Getting Data Off The Board
-
-Long-press BOOT while the firmware is running. The board reboots into flash-drive mode and exposes the microSD card over USB.
-
-On macOS, it usually appears in Finder as `NO NAME` unless the card has a label.
-
-Copy the session folders into a local working directory:
-
-```bash
-mkdir -p data
-cp -R /Volumes/NO\ NAME/2026-* data/
+```
+[sd] mounted, ... MB total
+[cam] ready
+[mic] ready
+[photos] resuming at img_000NNN.jpg
+[audio]  resuming at rec_000NNN.wav
+[wifi] AP up: SSID=owl IP=192.168.4.1
+[mdns] http://owl.local/
+[http] listening on :80
 ```
 
-You can also process directly from the mounted card, but copying locally is safer because the software writes `best_face.jpg` and `owl.sqlite`.
+## Configuration knobs
 
-## Software Setup
+In `owl_esp32.ino`:
 
-Set up the Python pipeline:
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `AP_SSID` | `"owl"` | WiFi network name. |
+| `AP_PASSWORD` | `"owlowlowl"` | Must be ≥ 8 chars for WPA2. **Hardcoded — visible to anyone reading this repo.** |
+| `AUDIO_SAMPLE_RATE` | `16000` | Hz. 16-bit mono WAV. |
+| `LONG_PRESS_MS` | `2500` | Hold time to trigger audio toggle. |
+| `cfg.frame_size` | `FRAMESIZE_SVGA` | 800×600 JPEG. UXGA (1600×1200) is also supported but slower over WiFi. |
+| `cfg.jpeg_quality` | `12` | 0–63, lower = better quality + larger file. |
 
-```bash
-cd software
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+## Important notes
 
-The first run downloads model files for InsightFace and Faster Whisper.
-
-## Process Sessions
-
-From the `software/` directory, process copied sessions:
-
-```bash
-.venv/bin/python -m owl process --input-dir ../data
-```
-
-What the pipeline does:
-
-1. Walks every session folder in `--input-dir`.
-2. Reads `image/` frames.
-3. Detects and embeds faces with InsightFace.
-4. Clusters faces within the session.
-5. Picks the largest face cluster as the main subject.
-6. Saves the best crop as `best_face.jpg`.
-7. Reads `audio/rec_*.wav`.
-8. Transcribes audio with Faster Whisper.
-9. Writes people and encounter records to `owl.sqlite`.
-
-Expected output per processed session:
-
-```text
-data/
-  2026-04-22_001/
-    image/
-    audio/
-    best_face.jpg
-  owl.sqlite
-```
-
-Re-running the same command is idempotent. If a session path already exists in the database, it is skipped.
-
-## Inspect Results
-
-List recognized people:
-
-```bash
-cd software
-.venv/bin/python -m owl list --db-path ../data/owl.sqlite
-```
-
-Show one person and their encounters:
-
-```bash
-.venv/bin/python -m owl show 1 --db-path ../data/owl.sqlite
-```
-
-Inspect the database directly:
-
-```bash
-sqlite3 ../data/owl.sqlite "SELECT id, name, first_met, last_met FROM people;"
-sqlite3 ../data/owl.sqlite "SELECT id, session_dir, audio_paths, length(transcript) FROM encounters;"
-```
-
-## End-to-End Engineer Smoke Test
-
-Use this checklist to verify the full system:
-
-1. Flash succeeds with `./flash.sh`.
-2. Serial output shows SD, camera, and microphone ready.
-3. Short BOOT press starts recording.
-4. At least two `img_*.jpg` files are written while recording.
-5. Short BOOT press stops recording and closes the WAV.
-6. Long BOOT press exposes the microSD as a USB drive.
-7. Session folders copy successfully to `data/`.
-8. `.venv/bin/python -m owl process --input-dir ../data` completes.
-9. Each usable session gets `best_face.jpg`.
-10. `../data/owl.sqlite` contains at least one `people` row and one `encounters` row.
-11. `owl show 1` prints audio file paths and a transcript, or an empty transcript if the clip had no clear speech.
-
-For face-only debugging, skip transcription:
-
-```bash
-cd software
-.venv/bin/python -m owl process --input-dir ../data --no-transcribe
-```
-
-## Important Notes
-
-- This project records still JPEG frames, not continuous video.
-- The firmware does not upload data over Wi-Fi.
-- The Python pipeline is offline and runs on the development machine.
-- If power is lost during recording, JPEGs already written should remain readable. The WAV may need repair because its header is patched only when recording stops.
-- `software/PROJECT.md` documents pipeline details and tuning flags.
-- `PROJECT.md` documents firmware behavior, flashing details, and hardware notes.
+- **AP password is in source.** Anyone who reads this repo knows it. Acceptable for a hobby device on a private 1-client AP; not acceptable for anything sensitive.
+- **No internet uplink.** When you're joined to `owl` your device has no internet access until you switch back to your usual WiFi.
+- **No real timestamps.** The board has no RTC and doesn't fetch NTP; files are sequentially numbered.
+- **Power loss during audio.** WAV header is finalized on stop — a yank mid-recording leaves a malformed header. The PCM data is still on disk; can usually be recovered with `ffmpeg` or `sox`.
+- **For face detection / transcription**, switch to the `main` branch — its session-folder layout matches the `software/` Python pipeline. The flat `/photos/` + `/audio/` layout on this branch isn't fed into that pipeline.
+- `TODO.md` documents the step-by-step build of this branch from `main` for anyone wanting to understand or replay the design choices.
+- `software/PROJECT.md` and `PROJECT.md` document the firmware + pipeline behavior on `main`.
