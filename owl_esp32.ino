@@ -12,6 +12,7 @@
 #include <SD_MMC.h>
 #include <ESP_I2S.h>
 #include <WiFi.h>
+#include <WebServer.h>
 #include "esp_camera.h"
 #include "camera_pins.h"
 
@@ -39,6 +40,9 @@ static uint32_t    g_nextPhotoId = 1;
 // --------- WiFi AP ----------
 static const char* AP_SSID     = "owl";
 static const char* AP_PASSWORD = "owlowlowl";   // ≥8 chars for WPA2
+
+// --------- HTTP server ----------
+static WebServer g_http(80);
 
 // --------- LED heartbeat (non-blocking) ----------
 // Idle pattern when AP is up: 100 ms on, 1900 ms off. Implemented in loop()
@@ -302,6 +306,14 @@ void setup() {
                   AP_SSID, apIP.toString().c_str());
   }
 
+  // Minimal HTTP server — Step 3. Real routes (/list, /photo/<name>) arrive
+  // in Steps 4–6.
+  g_http.on("/", []() {
+    g_http.send(200, "text/plain", "owl_esp32 ready\n");
+  });
+  g_http.begin();
+  Serial.println("[http] listening on :80");
+
   Serial.println("ready - short-press BOOT for photo "
                  "(long-press reserved for audio in TODO step 8)");
 }
@@ -339,6 +351,7 @@ void loop() {
     Serial.println("[boot] long-press detected (no action until TODO step 8)");
   }
 
+  g_http.handleClient();
   ledHeartbeatTick();
   delay(5);
 }
