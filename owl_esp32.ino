@@ -1,8 +1,8 @@
 // owl_esp32 — snapshot branch
 //
 // Short-press BOOT → capture one JPEG to /photos/img_NNNNNN.jpg on the SD card.
-// Long-press BOOT → reserved for audio recording (wired up in TODO.md Step 8).
-// WiFi AP + HTTP gallery → TODO.md Steps 2–7.
+// Long-press BOOT  → toggle WAV recording to /audio/rec_NNNNNN.wav (start/stop).
+// WiFi AP "owl"    → exposes a thumbnail gallery + audio player at http://192.168.4.1/.
 //
 // Target board: Seeed XIAO ESP32-S3 Sense
 // FQBN: esp32:esp32:XIAO_ESP32S3:PSRAM=opi,PartitionScheme=default_8MB,USBMode=default,CDCOnBoot=default
@@ -37,6 +37,13 @@ static const int PDM_DATA = 41;
 static const char* PHOTOS_DIR = "/photos";
 static uint32_t    g_nextPhotoId = 1;
 
+// --------- Audio state ----------
+static const char* AUDIO_DIR = "/audio";
+static uint32_t    g_nextAudioId  = 1;
+static bool        g_recording    = false;
+static File        g_wavFile;
+static uint32_t    g_wavDataBytes = 0;
+
 // --------- WiFi AP ----------
 static const char* AP_SSID     = "owl";
 static const char* AP_PASSWORD = "owlowlowl";   // ≥8 chars for WPA2
@@ -44,73 +51,100 @@ static const char* AP_PASSWORD = "owlowlowl";   // ≥8 chars for WPA2
 // --------- HTTP server ----------
 static WebServer g_http(80);
 
-// Gallery page served at /. Polls /list every 5 s so new photos appear
-// without a manual reload. The script builds DOM nodes via textContent
-// and encodeURIComponent — never innerHTML — so a stray filename on the
-// SD can't inject script.
+// Gallery page served at /. Polls /list every 5 s so new photos & audio
+// appear without a manual reload. DOM is built with createElement +
+// textContent + encodeURIComponent — never innerHTML — so a stray filename
+// on the SD can't inject script.
 static const char INDEX_HTML[] = R"HTML(<!doctype html>
 <html><head><meta charset="utf-8"><title>owl</title>
 <style>
  body{font:14px/1.4 system-ui,sans-serif;margin:1.5em;background:#0a0a0a;color:#eee}
  h1{font-size:1.1em;font-weight:600;margin:0 0 .8em}
- #count{opacity:.6;font-weight:400}
+ h2{font-size:.95em;font-weight:600;margin:1.5em 0 .6em;opacity:.8}
+ .count{opacity:.6;font-weight:400}
  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.6em}
+ .alist{display:flex;flex-direction:column;gap:.5em;max-width:640px}
  .card{position:relative;border:1px solid #222;background:#111}
  .card:hover{background:#1a1a2a;border-color:#345}
  .card a{display:block;text-decoration:none;color:#9cf}
  .card img{display:block;width:100%;height:auto;background:#000}
+ .card audio{display:block;width:100%}
  .card .name{padding:.4em .5em;font-family:ui-monospace,monospace;font-size:.8em;text-align:center}
- .card .del{position:absolute;top:.3em;right:.3em;width:1.6em;height:1.6em;border:0;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:.9em;cursor:pointer;opacity:0;transition:opacity .15s}
+ .card .del{position:absolute;top:.3em;right:.3em;width:1.6em;height:1.6em;border:0;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:.9em;cursor:pointer;opacity:0;transition:opacity .15s;z-index:2}
  .card:hover .del{opacity:1}
  .card .del:hover{background:#a33}
- .empty{opacity:.5;font-style:italic}
+ .empty{opacity:.5;font-style:italic;padding:.4em 0}
 </style></head><body>
-<h1>owl gallery <span id="count"></span></h1>
-<div id="g" class="grid"></div>
+<h1>owl</h1>
+<h2>Photos <span id="pc" class="count"></span></h2>
+<div id="gp" class="grid"></div>
+<h2>Audio <span id="ac" class="count"></span></h2>
+<div id="ga" class="alist"></div>
 <script>
+function makeDel(card, url, name, recountFn){
+  const b = document.createElement('button');
+  b.className='del'; b.type='button'; b.title='delete'; b.textContent='✕';
+  b.addEventListener('click', async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if(!confirm('Delete ' + name + '?')) return;
+    b.disabled = true;
+    try{
+      const r = await fetch(url, {method:'DELETE'});
+      if(r.ok){ card.remove(); recountFn(); }
+      else { alert('delete failed: HTTP ' + r.status); b.disabled = false; }
+    }catch(err){ alert('delete failed: ' + err); b.disabled = false; }
+  });
+  return b;
+}
+function makePhotoCard(n, recountFn){
+  const url = '/photo/' + encodeURIComponent(n);
+  const card = document.createElement('div'); card.className='card';
+  const a = document.createElement('a'); a.href=url; a.target='_blank';
+  const img = document.createElement('img'); img.src=url; img.loading='lazy'; img.alt=n;
+  const cap = document.createElement('div'); cap.className='name'; cap.textContent=n;
+  a.appendChild(img); a.appendChild(cap);
+  card.appendChild(a); card.appendChild(makeDel(card, url, n, recountFn));
+  return card;
+}
+function makeAudioCard(n, recountFn){
+  const url = '/audio/' + encodeURIComponent(n);
+  const card = document.createElement('div'); card.className='card';
+  const player = document.createElement('audio'); player.controls=true; player.preload='none'; player.src=url;
+  const cap = document.createElement('div'); cap.className='name'; cap.textContent=n;
+  card.appendChild(player); card.appendChild(cap);
+  card.appendChild(makeDel(card, url, n, recountFn));
+  return card;
+}
 async function refresh(){
   try{
     const r = await fetch('/list', {cache:'no-store'});
-    const names = await r.json();
-    document.getElementById('count').textContent = '(' + names.length + ')';
-    const g = document.getElementById('g');
-    g.replaceChildren();
-    if(!names.length){
-      const d = document.createElement('div');
-      d.className = 'empty';
-      d.textContent = 'no photos yet — short-press BOOT to capture';
-      g.appendChild(d);
-      return;
+    const data = await r.json();
+    const gp = document.getElementById('gp');
+    const ga = document.getElementById('ga');
+    const pc = document.getElementById('pc');
+    const ac = document.getElementById('ac');
+    const recount = () => {
+      pc.textContent = '(' + Array.from(gp.children).filter(c => !c.classList.contains('empty')).length + ')';
+      ac.textContent = '(' + Array.from(ga.children).filter(c => !c.classList.contains('empty')).length + ')';
+    };
+    gp.replaceChildren();
+    ga.replaceChildren();
+    if(!data.photos.length){
+      const d = document.createElement('div'); d.className='empty';
+      d.textContent='no photos yet — short-press BOOT to capture';
+      gp.appendChild(d);
+    } else {
+      for(const n of data.photos) gp.appendChild(makePhotoCard(n, recount));
     }
-    for(const n of names){
-      const url = '/photo/' + encodeURIComponent(n);
-      const card = document.createElement('div');
-      card.className = 'card';
-      const a = document.createElement('a');
-      a.href = url; a.target = '_blank';
-      const img = document.createElement('img');
-      img.src = url; img.loading = 'lazy'; img.alt = n;
-      const cap = document.createElement('div');
-      cap.className = 'name'; cap.textContent = n;
-      a.appendChild(img); a.appendChild(cap);
-      const del = document.createElement('button');
-      del.className = 'del';
-      del.type = 'button';
-      del.title = 'delete';
-      del.textContent = '✕';
-      del.addEventListener('click', async (e) => {
-        e.preventDefault(); e.stopPropagation();
-        if(!confirm('Delete ' + n + '?')) return;
-        del.disabled = true;
-        try{
-          const r = await fetch(url, {method:'DELETE'});
-          if(r.ok){ card.remove(); document.getElementById('count').textContent = '(' + (g.children.length) + ')'; }
-          else { alert('delete failed: HTTP ' + r.status); del.disabled = false; }
-        }catch(err){ alert('delete failed: ' + err); del.disabled = false; }
-      });
-      card.appendChild(a); card.appendChild(del);
-      g.appendChild(card);
+    if(!data.audio.length){
+      const d = document.createElement('div'); d.className='empty';
+      d.textContent='no audio yet — long-press BOOT (≥2.5s) to start, again to stop';
+      ga.appendChild(d);
+    } else {
+      for(const n of data.audio) ga.appendChild(makeAudioCard(n, recount));
     }
+    pc.textContent = '(' + data.photos.length + ')';
+    ac.textContent = '(' + data.audio.length + ')';
   }catch(e){}
 }
 refresh(); setInterval(refresh, 5000);
@@ -164,7 +198,12 @@ static void haltBlinking(uint32_t periodMs) {
 // Non-blocking heartbeat. Call from loop() every iteration; toggles the LED
 // on the LED_HB_ON_MS / LED_HB_OFF_MS schedule. ledFlash() interrupts this
 // briefly during photo captures; the heartbeat resumes on the next tick.
+// While recording, the LED stays solid on instead of heartbeating.
 static void ledHeartbeatTick() {
+  if (g_recording) {
+    digitalWrite(PIN_LED, LED_ON_LEVEL);
+    return;
+  }
   uint32_t now = millis();
   uint32_t target = g_ledHbOn ? LED_HB_ON_MS : LED_HB_OFF_MS;
   if (now - g_ledHbT >= target) {
@@ -205,7 +244,6 @@ static void patchWavHeader(File& f, uint32_t dataBytes) {
   f.seek(40); f.write((uint8_t*)&dataBytes, 4);
 }
 
-// Reserved for Step 8 (audio recording on long-press BOOT).
 static bool initMic() {
   I2S.setPinsPdmRx(PDM_CLK, PDM_DATA);
   if (!I2S.begin(I2S_MODE_PDM_RX, AUDIO_SAMPLE_RATE,
@@ -214,6 +252,70 @@ static bool initMic() {
     return false;
   }
   return true;
+}
+
+// Walk /audio/ once at boot to find the highest existing rec_NNNNNN.wav
+// and seed g_nextAudioId so it persists across reboots.
+static void scanNextAudioId() {
+  uint32_t maxN = 0;
+  File dir = SD_MMC.open(AUDIO_DIR);
+  if (!dir || !dir.isDirectory()) {
+    g_nextAudioId = 1;
+    return;
+  }
+  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+    if (f.isDirectory()) { f.close(); continue; }
+    String name = f.name();
+    int slash = name.lastIndexOf('/');
+    if (slash >= 0) name = name.substring(slash + 1);
+    if (name.startsWith("rec_") && name.endsWith(".wav")) {
+      String numPart = name.substring(4, name.length() - 4);
+      uint32_t n = (uint32_t)numPart.toInt();
+      if (n > maxN) maxN = n;
+    }
+    f.close();
+  }
+  g_nextAudioId = maxN + 1;
+}
+
+static void recordingStart() {
+  if (g_recording) return;
+  char path[64];
+  snprintf(path, sizeof(path), "%s/rec_%06u.wav",
+           AUDIO_DIR, (unsigned)g_nextAudioId);
+  g_wavFile = SD_MMC.open(path, FILE_WRITE);
+  if (!g_wavFile) {
+    Serial.printf("[audio] open %s failed\n", path);
+    ledStrobe(5, 100);
+    return;
+  }
+  writeWavHeaderPlaceholder(g_wavFile);
+  g_wavDataBytes = 0;
+  g_recording = true;
+  digitalWrite(PIN_LED, LED_ON_LEVEL);  // solid on while recording
+  Serial.printf("[audio] recording -> %s\n", path);
+}
+
+static void recordingStop() {
+  if (!g_recording) return;
+  g_recording = false;
+  patchWavHeader(g_wavFile, g_wavDataBytes);
+  g_wavFile.close();
+  Serial.printf("[audio] stopped, %u PCM bytes\n", (unsigned)g_wavDataBytes);
+  g_nextAudioId++;
+  // ledHeartbeatTick() will resume the heartbeat on the next loop iteration.
+}
+
+// Pull whatever I2S samples are available and append to the WAV. Cheap to
+// call when not recording (early-out on g_recording).
+static void recordingPump() {
+  if (!g_recording) return;
+  static uint8_t buf[2048];
+  size_t n = I2S.readBytes((char*)buf, sizeof(buf));
+  if (n > 0) {
+    g_wavFile.write(buf, n);
+    g_wavDataBytes += n;
+  }
 }
 
 // ============================================================
@@ -368,6 +470,10 @@ void setup() {
     Serial.println("[sd] mkdir /photos failed - halting");
     haltBlinking(120);
   }
+  if (!SD_MMC.exists(AUDIO_DIR) && !SD_MMC.mkdir(AUDIO_DIR)) {
+    Serial.println("[sd] mkdir /audio failed - halting");
+    haltBlinking(120);
+  }
 
   if (!initCamera()) {
     Serial.println("[cam] halting");
@@ -375,8 +481,16 @@ void setup() {
   }
   Serial.println("[cam] ready");
 
+  if (!initMic()) {
+    Serial.println("[mic] halting");
+    haltBlinking(700);
+  }
+  Serial.println("[mic] ready");
+
   scanNextPhotoId();
   Serial.printf("[photos] resuming at img_%06u.jpg\n", (unsigned)g_nextPhotoId);
+  scanNextAudioId();
+  Serial.printf("[audio]  resuming at rec_%06u.wav\n", (unsigned)g_nextAudioId);
 
   // Bring up the WiFi AP. Failure is non-fatal — photos still work offline.
   WiFi.mode(WIFI_AP);
@@ -393,67 +507,96 @@ void setup() {
     g_http.send(200, "text/html", INDEX_HTML);
   });
   g_http.on("/list", []() {
-    String body = "[";
-    bool first = true;
-    File dir = SD_MMC.open(PHOTOS_DIR);
-    if (dir && dir.isDirectory()) {
-      for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+    // Skip the actively-recording WAV (header isn't finalized yet).
+    char activeName[32] = {0};
+    if (g_recording) {
+      snprintf(activeName, sizeof(activeName),
+               "rec_%06u.wav", (unsigned)g_nextAudioId);
+    }
+    auto append = [&](String& body, const char* dir,
+                      const char* prefix, const char* suffix,
+                      const char* skip) {
+      File d = SD_MMC.open(dir);
+      if (!d || !d.isDirectory()) return;
+      bool first = true;
+      for (File f = d.openNextFile(); f; f = d.openNextFile()) {
         if (!f.isDirectory()) {
           String name = f.name();
           int slash = name.lastIndexOf('/');
           if (slash >= 0) name = name.substring(slash + 1);
-          if (name.startsWith("img_") && name.endsWith(".jpg")) {
+          if (name.startsWith(prefix) && name.endsWith(suffix) &&
+              (skip[0] == '\0' || name != skip)) {
             if (!first) body += ",";
-            body += "\"";
-            body += name;
-            body += "\"";
+            body += "\""; body += name; body += "\"";
             first = false;
           }
         }
         f.close();
       }
-    }
-    body += "]";
+    };
+    String body = "{\"photos\":[";
+    append(body, PHOTOS_DIR, "img_", ".jpg", "");
+    body += "],\"audio\":[";
+    append(body, AUDIO_DIR,  "rec_", ".wav", activeName);
+    body += "]}";
     g_http.send(200, "application/json", body);
   });
-  // /photo/<name> — GET streams a single JPEG, DELETE removes it from SD.
-  // Reject any name containing '/' or '..' so the lookup can't escape /photos/.
+  // /photo/<name> + /audio/<name> — GET streams the file, DELETE removes it.
+  // Reject any name containing '/' or '..' so the lookup can't escape its dir.
   g_http.onNotFound([]() {
-    static const String prefix = "/photo/";
     String uri = g_http.uri();
-    if (!uri.startsWith(prefix)) {
+    const char* dir         = nullptr;
+    const char* contentType = nullptr;
+    String name;
+    if (uri.startsWith("/photo/")) {
+      dir = PHOTOS_DIR; contentType = "image/jpeg"; name = uri.substring(7);
+    } else if (uri.startsWith("/audio/")) {
+      dir = AUDIO_DIR;  contentType = "audio/wav";  name = uri.substring(7);
+    } else {
       g_http.send(404, "text/plain", "not found\n");
       return;
     }
-    String name = uri.substring(prefix.length());
     if (name.length() == 0 ||
         name.indexOf('/')  >= 0 ||
         name.indexOf("..") >= 0) {
       g_http.send(404, "text/plain", "not found\n");
       return;
     }
-    String full = String(PHOTOS_DIR) + "/" + name;
 
     HTTPMethod m = g_http.method();
+
+    // Refuse to serve or delete the WAV that's currently being recorded —
+    // header is unfinalized and the file is still being appended to.
+    if (g_recording && dir == AUDIO_DIR) {
+      char active[32];
+      snprintf(active, sizeof(active),
+               "rec_%06u.wav", (unsigned)g_nextAudioId);
+      if (name == active) {
+        g_http.send(503, "text/plain", "recording in progress\n");
+        return;
+      }
+    }
+
+    String full = String(dir) + "/" + name;
     if (m == HTTP_GET) {
       File f = SD_MMC.open(full, FILE_READ);
       if (!f || f.isDirectory()) {
         if (f) f.close();
-        g_http.send(404, "text/plain", "no such photo\n");
+        g_http.send(404, "text/plain", "not found\n");
         return;
       }
-      g_http.streamFile(f, "image/jpeg");
+      g_http.streamFile(f, contentType);
       f.close();
     } else if (m == HTTP_DELETE) {
       if (!SD_MMC.exists(full)) {
-        g_http.send(404, "text/plain", "no such photo\n");
+        g_http.send(404, "text/plain", "not found\n");
         return;
       }
       if (SD_MMC.remove(full)) {
-        Serial.printf("[photo] deleted %s\n", full.c_str());
+        Serial.printf("[http] deleted %s\n", full.c_str());
         g_http.send(204, "text/plain", "");
       } else {
-        Serial.printf("[photo] delete failed %s\n", full.c_str());
+        Serial.printf("[http] delete failed %s\n", full.c_str());
         g_http.send(500, "text/plain", "delete failed\n");
       }
     } else {
@@ -493,13 +636,16 @@ void loop() {
     }
   }
 
-  // Long-press fires exactly once at the threshold while held.
+  // Long-press fires exactly once at the threshold while held: toggles
+  // audio recording. First long-press starts; second stops.
   if (g_btnStable == LOW && !g_longFired &&
       (now - g_btnPressedAt) >= LONG_PRESS_MS) {
     g_longFired = true;
-    Serial.println("[boot] long-press detected (no action until TODO step 8)");
+    if (g_recording) recordingStop();
+    else             recordingStart();
   }
 
+  recordingPump();
   g_http.handleClient();
   ledHeartbeatTick();
   delay(5);
