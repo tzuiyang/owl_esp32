@@ -66,13 +66,16 @@ static const char INDEX_HTML[] = R"HTML(<!doctype html>
  .alist{display:flex;flex-direction:column;gap:.5em;max-width:640px}
  .card{position:relative;border:1px solid #222;background:#111}
  .card:hover{background:#1a1a2a;border-color:#345}
- .card a{display:block;text-decoration:none;color:#9cf}
+ .card .view{display:block;text-decoration:none;color:#9cf}
  .card img{display:block;width:100%;height:auto;background:#000}
  .card audio{display:block;width:100%}
- .card .name{padding:.4em .5em;font-family:ui-monospace,monospace;font-size:.8em;text-align:center}
- .card .del{position:absolute;top:.3em;right:.3em;width:1.6em;height:1.6em;border:0;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:.9em;cursor:pointer;opacity:0;transition:opacity .15s;z-index:2}
- .card:hover .del{opacity:1}
- .card .del:hover{background:#a33}
+ .meta{display:flex;align-items:center;gap:.4em;padding:.35em .5em .4em}
+ .meta .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,monospace;font-size:.8em;color:#bbb}
+ .toolbar{display:flex;gap:.25em;opacity:0;transition:opacity .15s}
+ .card:hover .toolbar{opacity:1}
+ .toolbar a, .toolbar button{display:inline-flex;align-items:center;justify-content:center;width:1.6em;height:1.6em;border:0;border-radius:50%;background:rgba(255,255,255,.08);color:#eee;font-size:.9em;text-decoration:none;cursor:pointer;line-height:1}
+ .toolbar .dl:hover{background:#363}
+ .toolbar .del:hover{background:#a33}
  .empty{opacity:.5;font-style:italic;padding:.4em 0}
 </style></head><body>
 <h1>owl</h1>
@@ -81,38 +84,46 @@ static const char INDEX_HTML[] = R"HTML(<!doctype html>
 <h2>Audio <span id="ac" class="count"></span></h2>
 <div id="ga" class="alist"></div>
 <script>
-function makeDel(card, url, name, recountFn){
-  const b = document.createElement('button');
-  b.className='del'; b.type='button'; b.title='delete'; b.textContent='✕';
-  b.addEventListener('click', async (e) => {
+function makeToolbar(card, url, name, recountFn){
+  const t = document.createElement('div'); t.className='toolbar';
+  const dl = document.createElement('a');
+  dl.className='dl'; dl.href=url; dl.download=name; dl.title='download'; dl.textContent='↓';
+  dl.addEventListener('click', e => e.stopPropagation());
+  const del = document.createElement('button');
+  del.className='del'; del.type='button'; del.title='delete'; del.textContent='✕';
+  del.addEventListener('click', async (e) => {
     e.preventDefault(); e.stopPropagation();
     if(!confirm('Delete ' + name + '?')) return;
-    b.disabled = true;
+    del.disabled = true;
     try{
       const r = await fetch(url, {method:'DELETE'});
       if(r.ok){ card.remove(); recountFn(); }
-      else { alert('delete failed: HTTP ' + r.status); b.disabled = false; }
-    }catch(err){ alert('delete failed: ' + err); b.disabled = false; }
+      else { alert('delete failed: HTTP ' + r.status); del.disabled = false; }
+    }catch(err){ alert('delete failed: ' + err); del.disabled = false; }
   });
-  return b;
+  t.appendChild(dl); t.appendChild(del);
+  return t;
+}
+function makeMeta(card, url, name, recountFn){
+  const m = document.createElement('div'); m.className='meta';
+  const cap = document.createElement('span'); cap.className='name'; cap.textContent=name;
+  m.appendChild(cap); m.appendChild(makeToolbar(card, url, name, recountFn));
+  return m;
 }
 function makePhotoCard(n, recountFn){
   const url = '/photo/' + encodeURIComponent(n);
   const card = document.createElement('div'); card.className='card';
-  const a = document.createElement('a'); a.href=url; a.target='_blank';
+  const a = document.createElement('a'); a.className='view'; a.href=url; a.target='_blank';
   const img = document.createElement('img'); img.src=url; img.loading='lazy'; img.alt=n;
-  const cap = document.createElement('div'); cap.className='name'; cap.textContent=n;
-  a.appendChild(img); a.appendChild(cap);
-  card.appendChild(a); card.appendChild(makeDel(card, url, n, recountFn));
+  a.appendChild(img);
+  card.appendChild(a); card.appendChild(makeMeta(card, url, n, recountFn));
   return card;
 }
 function makeAudioCard(n, recountFn){
   const url = '/audio/' + encodeURIComponent(n);
   const card = document.createElement('div'); card.className='card';
   const player = document.createElement('audio'); player.controls=true; player.preload='none'; player.src=url;
-  const cap = document.createElement('div'); cap.className='name'; cap.textContent=n;
-  card.appendChild(player); card.appendChild(cap);
-  card.appendChild(makeDel(card, url, n, recountFn));
+  card.appendChild(player); card.appendChild(makeMeta(card, url, n, recountFn));
   return card;
 }
 async function refresh(){
@@ -166,8 +177,7 @@ static uint32_t g_btnRawChgAt  = 0;
 static uint32_t g_btnPressedAt = 0;
 static bool     g_longFired    = false;
 
-// I2S handle reserved for Step 8 audio recording. initMic() below is currently
-// uncalled but kept compilable so Step 8 can re-enable it without ABI churn.
+// PDM mic — initialized in setup(), drained from loop() while g_recording.
 I2SClass I2S;
 
 // ============================================================
