@@ -61,7 +61,7 @@ esp32:esp32:XIAO_ESP32S3:PSRAM=opi,PartitionScheme=default_8MB,USBMode=default,C
 
 1. Insert the FAT32 microSD card.
 2. Power the board over USB.
-3. Open a serial monitor if you want logs.
+3. Open a serial monitor if you want logs (see [Serial Monitor](#serial-monitor) below).
 4. Short-press BOOT once to start recording.
 5. Speak and point the camera at a test subject.
 6. Short-press BOOT again to stop recording.
@@ -73,6 +73,60 @@ During recording:
 - One JPEG frame is written to `image/` every 2 seconds.
 - Each JPEG is closed immediately after writing.
 - The WAV header is finalized when recording stops.
+
+## LED Indicators
+
+The single onboard LED is the only visual feedback. Use it to diagnose state without a serial monitor.
+
+**Recorder mode**
+
+| LED pattern | Meaning |
+| --- | --- |
+| Off | Booted and idle. Ready to record. |
+| Solid on | Recording in progress. |
+| Fast strobe (~10 Hz, ~1 s burst) | Long-press acknowledged. Rebooting into flash-drive mode. |
+
+**Flash-drive (MSC) mode**
+
+| LED pattern | Meaning |
+| --- | --- |
+| Slow heartbeat (100 ms on, 900 ms off) | MSC active. SD card exposed over USB. Short-press BOOT to return to recorder mode. |
+
+**Permanent fault — LED blinks forever and the board never advances**
+
+| Blink rate | What failed |
+| --- | --- |
+| ~4 Hz (toggles every 120 ms) | SD card mount failed. Check that the card is inserted, ≤ 32 GB, and FAT32. |
+| ~1.2 Hz (toggles every 400 ms) | Camera init failed. Check the camera ribbon cable seating. |
+| ~0.7 Hz (toggles every 700 ms) | Microphone (PDM I2S) init failed. |
+
+If you see a fault pattern, power-cycle the board after fixing the underlying issue.
+
+## Serial Monitor
+
+The firmware logs at **115200 baud** over USB CDC. The board appears as `/dev/cu.usbmodem*` on macOS or `/dev/ttyACM*` on Linux.
+
+Find the port:
+
+```bash
+ls /dev/cu.usbmodem*        # macOS
+ls /dev/ttyACM*             # Linux
+```
+
+Open the monitor with `arduino-cli` (already installed for flashing):
+
+```bash
+arduino-cli monitor -p /dev/cu.usbmodem101 -c baudrate=115200
+```
+
+Replace `/dev/cu.usbmodem101` with whatever path `ls` printed. Exit with `Ctrl-C`.
+
+Alternatives:
+
+- **`screen`** (preinstalled on macOS): `screen /dev/cu.usbmodem101 115200` — exit with `Ctrl-A` then `K` then `y`.
+- **VS Code / Arduino IDE**: open the built-in Serial Monitor and set the baud rate to 115200.
+
+If the port disappears mid-session, the board likely rebooted into USB Mass Storage mode (long-press BOOT). The serial port comes back after another reboot into recorder mode.
 
 ## Getting Data Off The Board
 
