@@ -1,0 +1,7 @@
+# GitHub CODEOWNERS — https://docs.github.com/en/repositories/managing-your-repositories-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Combined with the branch protection rule on `main` requiring code owner
+# reviews, every PR to main needs an approval from @tzuiyang specifically.
+# Other collaborators reviewing each other's PRs does not satisfy the rule.
+
+* @tzuiyang
