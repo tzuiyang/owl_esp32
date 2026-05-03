@@ -649,9 +649,59 @@ void setup() {
   });
 
   // /photo/<name> + /audio/<name> — GET streams the file, DELETE removes it.
+  // POST /web/<filename> — upload UI files (used by deploy-ui.sh over WiFi).
   // Reject any name containing '/' or '..' so the lookup can't escape its dir.
   g_http.onNotFound([]() {
     String uri = g_http.uri();
+
+    // POST /web/<filename> — upload a UI asset onto SD's /web/ folder.
+    if (g_http.method() == HTTP_POST && uri.startsWith("/web/")) {
+      String name = uri.substring(5);
+      if (name.length() == 0 ||
+          name.indexOf('/') >= 0 ||
+          name.indexOf("..") >= 0) {
+        g_http.send(400, "text/plain", "invalid filename\n");
+        return;
+      }
+      // Whitelist by extension to prevent abuse of the upload endpoint.
+      bool extOk = false;
+      const char* allowed[] = {".html", ".css", ".js", ".json",
+                               ".ico", ".png", ".svg", ".woff2"};
+      for (auto ext : allowed) {
+        if (name.endsWith(ext)) { extOk = true; break; }
+      }
+      if (!extOk) {
+        g_http.send(400, "text/plain", "extension not allowed\n");
+        return;
+      }
+      if (!SD_MMC.exists("/web") && !SD_MMC.mkdir("/web")) {
+        g_http.send(500, "text/plain", "mkdir /web failed\n");
+        return;
+      }
+      String body = g_http.arg("plain");
+      if (body.length() == 0) {
+        g_http.send(400, "text/plain", "empty body\n");
+        return;
+      }
+      String full = String("/web/") + name;
+      File wf = SD_MMC.open(full, FILE_WRITE);
+      if (!wf) {
+        g_http.send(500, "text/plain", "open failed\n");
+        return;
+      }
+      size_t written = wf.write((const uint8_t*)body.c_str(), body.length());
+      wf.close();
+      if (written != body.length()) {
+        Serial.printf("[ui] short write %s: %u/%u\n",
+                      full.c_str(), (unsigned)written, (unsigned)body.length());
+        g_http.send(500, "text/plain", "short write\n");
+        return;
+      }
+      Serial.printf("[ui] wrote %s (%u bytes)\n",
+                    full.c_str(), (unsigned)written);
+      g_http.send(201, "text/plain", "uploaded\n");
+      return;
+    }
     const char* dir         = nullptr;
     const char* contentType = nullptr;
     String name;
