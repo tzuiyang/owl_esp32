@@ -21,3 +21,8 @@ venv/
 # Watcher runtime data — contains personal photos / downloaded captures
 known_faces/
 .watcher_cache/
+
+# Local UI dev — source of truth is INDEX_HTML in owl_esp32.ino. The
+# ui-dev/ folder is just a sandbox for iterating in a browser without
+# reflashing. Regenerate from owl_esp32.ino anytime.
+ui-dev/
