@@ -19,11 +19,13 @@ A Seeed XIAO ESP32-S3 Sense turned into a self-contained WiFi photo + audio devi
    - [Cleaning up](#4-cleaning-up)
 4. [Buttons & LED reference](#buttons--led-reference)
 5. [Web interface](#web-interface)
-6. [HTTP API](#http-api-curl)
-7. [Serial monitor (debugging)](#serial-monitor-debugging)
-8. [Troubleshooting](#troubleshooting)
-9. [Configuration knobs](#configuration-knobs)
-10. [Limitations](#limitations)
+6. [Customizing the UI](#customizing-the-ui)
+7. [Face recognition (optional companion)](#face-recognition-optional-companion)
+8. [HTTP API](#http-api-curl)
+9. [Serial monitor (debugging)](#serial-monitor-debugging)
+10. [Troubleshooting](#troubleshooting)
+11. [Configuration knobs](#configuration-knobs)
+12. [Limitations](#limitations)
 
 ---
 
@@ -226,10 +228,188 @@ Available URLs once you're joined to `owl`:
 
 | URL | Returns |
 | --- | --- |
-| `http://owl.local/` (or `/192.168.4.1/`) | The HTML gallery. |
+| `http://owl.local/` (or `/192.168.4.1/`) | The HTML gallery. Served from SD's `/web/index.html` if present; otherwise an embedded fallback. |
+| `http://owl.local/style.css`, `/app.js` | Static UI assets, also served from SD's `/web/`. See [Customizing the UI](#customizing-the-ui). |
 | `http://owl.local/list` | JSON listing: `{"photos":[...], "audio":[...]}`. |
 | `http://owl.local/photo/<name>` | One JPEG. `GET` to view, `DELETE` to remove. |
 | `http://owl.local/audio/<name>` | One WAV. Same verbs. The actively-recording WAV returns 503. |
+| `http://owl.local/annotate` | `POST` form-encoded `photo=...&name=...&dist=...` — used by the [face-recognition watcher](#face-recognition-optional-companion). |
+| `http://owl.local/annotations` | `GET` JSON map of `{photo: {name, dist}}` — gallery JS reads this to render the green match banners. |
+
+---
+
+## Customizing the UI
+
+The gallery is built from three plain files you can edit and redeploy without reflashing the firmware.
+
+### Where the UI lives
+
+```
+web-src/
+  index.html       ← page structure
+  style.css        ← all visual styling (colors, layout, hover states)
+  app.js           ← all behavior (polling, rendering, delete, download)
+```
+
+These are the **source of truth**. The device serves them out of `/web/` on the SD card. There's also a smaller embedded copy compiled into `owl_esp32.ino` as `INDEX_HTML` — that's a fallback used only when the SD has no `/web/` folder, so the device always boots with a working UI even on a fresh card.
+
+### Local development (no device needed)
+
+The `app.js` ships with a "dev shim" that auto-detects when you're running from `file://` or `localhost` and mocks `/list` and `/annotations` so the page renders with placeholder data — no network or device required.
+
+**Easiest:**
+```bash
+open web-src/index.html
+```
+
+Browser opens, you see the gallery with mock filenames and a yellow "DEV MODE" banner at the top.
+
+**Better — auto-reload on save** (recommended for active iteration):
+1. Install the **Live Server** extension in VSCode.
+2. Right-click `web-src/index.html` → **Open with Live Server**.
+3. Edit any of the three files, save, browser reloads instantly.
+
+**Manual:**
+```bash
+cd web-src && python3 -m http.server 5500
+# then open http://localhost:5500/
+```
+
+### Deploying changes to the device (no reflash)
+
+```bash
+./deploy-ui.sh
+```
+
+Workflow:
+
+1. Pop the device's microSD card into your Mac's card reader.
+2. Run `./deploy-ui.sh` — it auto-finds the SD card under `/Volumes/`, copies `web-src/*` to `/web/` on it, and prints a confirmation. Pass `/Volumes/<NAME>` as an argument if you have multiple removable volumes.
+3. Eject the SD, put it back in the device, refresh `http://owl.local/`.
+
+That's it. ~5–10 second deploy. UI changes don't require a single firmware flash.
+
+### One-time firmware flash
+
+You need to flash the firmware **once** so it learns about the `/web/` SD path. The check-in build already includes this — just:
+
+```bash
+./flash.sh
+```
+
+After that single flash, every UI iteration skips firmware and goes through `deploy-ui.sh`.
+
+### Constraints to keep in mind
+
+- **All assets must be inline or top-level.** The current firmware only serves files at `/style.css`, `/app.js`, etc. — single path segments. Sub-paths like `/assets/icon.png` aren't served. If you later want subfolders (e.g., for a Vite build), the firmware's `onNotFound` handler needs a small extension.
+- **Tiny budget.** The whole UI ships in a few KB. A React/Vue SPA bundle would balloon to ~150 KB+ — still fits, but slows over the AP and bloats the SD writes.
+- **No `innerHTML`.** A SecurityHook in this repo flags it; the existing code uses `createElement` + `textContent` + `encodeURIComponent` to avoid XSS via stray filenames.
+- **The page must work offline.** While joined to `owl`, your device has no internet access. Don't reference `<script src="https://...">` or external CDNs — they won't load.
+- **Don't break the API contracts** the JS expects: `GET /list` returns `{photos:[...], audio:[...]}`; `GET /annotations` returns `{filename: {name, dist}}`. The mock-fetch shim documents these shapes.
+
+### What changing files looks like in practice
+
+| Change | Edit | Effort |
+| --- | --- | --- |
+| Different background color | `style.css` `body{background: ...}` | seconds |
+| Larger thumbnails | `style.css` `.grid` minmax | seconds |
+| Different font | `style.css` `body{font: ...}` | seconds |
+| Add a "match-only" filter button | `index.html` + `app.js` | minutes |
+| Show file size next to the name | `app.js` (would need new firmware endpoint for sizes) | needs firmware change |
+| Add a settings page | `index.html` + `app.js` (vanilla routing or an SPA framework) | larger feature |
+
+For anything where you want a real frontend toolchain (Vite, TypeScript, React, etc.) — the current setup is the foundation. A future migration to Vite would build to `dist/` and you'd point `deploy-ui.sh` at `dist/` instead of `web-src/`. The firmware side stays unchanged as long as the build outputs flat top-level files.
+
+---
+
+## Face recognition (optional companion)
+
+A host-side Python "watcher" can pull each new photo from the device, run face recognition against a small local database of known people, and tag matched photos in the gallery UI. The ESP32 itself does no AI work — all encoding and matching happens on your Mac.
+
+```
+ESP32                Mac (watcher.py)
+─────                ────────────────
+  /list   ◄─────────  poll every N seconds
+  /photo  ─────────►  download new JPEGs
+                      run face_recognition
+                      compare against ./known_faces/
+  /annotate ◄───────  POST best match per photo
+  /annotations ────►  gallery JS reads & renders
+```
+
+### One-time setup
+
+```bash
+# install once (requires internet on regular WiFi)
+pip3 install face_recognition requests
+
+# create the database
+mkdir -p known_faces
+# drop reference photos into named subfolders:
+#   known_faces/<person_name>/1.jpg
+#   known_faces/<person_name>/2.jpg
+# the folder name becomes the label shown in the alert + gallery
+```
+
+Folder layout the watcher expects:
+
+```
+known_faces/
+  Alice/
+    1.jpg
+    2.jpg
+  Bob/
+    portrait.jpg
+```
+
+### Run the watcher
+
+Join the `owl` WiFi on your Mac first, then:
+
+```bash
+python3 software/face_recognition/watcher.py --host 192.168.4.1 --interval 5 --catchup
+```
+
+### What the flags mean
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--host` | `owl.local` | The device's hostname or IP. Use `192.168.4.1` if mDNS isn't resolving. |
+| `--interval` | `10` | **How often (in seconds) to poll the device for new photos.** Lower = more responsive but more network chatter. `5` is good for active testing; `30` is fine for passive monitoring. |
+| `--catchup` | off | Process every photo currently on the SD, not just ones that arrive after startup. Use this when first running, after renaming `known_faces/` folders, or after a firmware reflash (which clears RAM-only annotations). |
+| `--tolerance` | `0.6` | Face-distance threshold. Lower = stricter match. Default is `face_recognition`'s library default. Owl-camera photos with motion blur may need to **tighten** this to `0.5` to avoid false positives. |
+| `--no-notify` | off | Suppress macOS notification banners (terminal output only). |
+
+### What success looks like
+
+In the watcher terminal:
+
+```
+loading known faces from known_faces/...
+  loaded Alice: 1.jpg
+  loaded Bob: portrait.jpg
+  total: 2 encoding(s) for 2 person/people
+
+polling http://192.168.4.1/list every 5s. Ctrl-C to stop.
+
+  img_000004.jpg  →  Alice  (dist=0.412)
+```
+
+In the gallery (`http://owl.local/`), the matched photo gets a green banner under it:
+
+```
+img_000004.jpg
+Alice — 59% match
+```
+
+A macOS notification banner pops up when a match fires.
+
+### Caveats
+
+- **Annotations live in RAM on the ESP32.** Reboot the device → all annotations disappear. The watcher will re-annotate when it next sees those photos (use `--catchup` once after a reboot to rebuild quickly).
+- **One annotation per photo.** Group photos with multiple known faces only get tagged with the *closest* match.
+- **Watcher must be on the `owl` WiFi** to talk to the device — and while joined, the Mac has no internet. Once installed, the recognition pipeline runs fully offline.
+- **Camera quality affects accuracy.** Motion blur and low light push real same-person matches up to 0.55+ distance, eating into the safety margin. Tighten `--tolerance` if you start seeing false positives.
 
 ---
 

@@ -1,0 +1,29 @@
+<!doctype html>
+<!--
+  owl gallery — UI shipped to the device's SD card under /web/.
+  Source of truth: web-src/{index.html,style.css,app.js} in this repo.
+
+  Deploy: copy this folder's contents to /web/ on the device's microSD.
+          (See README → "Deploying UI changes".)
+
+  Local dev:
+    open web-src/index.html        # uses the dev shim in app.js for mock data
+    OR
+    cd web-src && python3 -m http.server 5500   # http://localhost:5500/
+    OR
+    Use VSCode "Live Server" extension to auto-reload on save.
+
+  When deployed, the device serves this exact file (and style.css + app.js)
+  from SD. No firmware reflash needed.
+-->
+<html><head><meta charset="utf-8"><title>owl</title>
+<link rel="stylesheet" href="style.css">
+</head><body>
+<div id="devbar" hidden>DEV MODE — /list and /annotations are mocked. Edit web-src/, reload to iterate.</div>
+<h1>owl</h1>
+<h2>Photos <span id="pc" class="count"></span></h2>
+<div id="gp" class="grid"></div>
+<h2>Audio <span id="ac" class="count"></span></h2>
+<div id="ga" class="alist"></div>
+<script src="app.js"></script>
+</body></html>

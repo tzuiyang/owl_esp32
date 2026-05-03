@@ -14,6 +14,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
+#include <vector>
 #include "esp_camera.h"
 #include "camera_pins.h"
 
@@ -52,6 +53,30 @@ static const char* AP_PASSWORD = "owlowlowl";   // ≥8 chars for WPA2
 // --------- HTTP server ----------
 static WebServer g_http(80);
 
+// MIME-type guess for serving static UI files from SD's /web/ folder.
+static const char* contentTypeFor(const String& path) {
+  int dot = path.lastIndexOf('.');
+  if (dot < 0) return "application/octet-stream";
+  String ext = path.substring(dot);
+  if (ext == ".html" || ext == ".htm") return "text/html";
+  if (ext == ".css")   return "text/css";
+  if (ext == ".js")    return "application/javascript";
+  if (ext == ".json")  return "application/json";
+  if (ext == ".ico")   return "image/x-icon";
+  if (ext == ".png")   return "image/png";
+  if (ext == ".svg")   return "image/svg+xml";
+  return "application/octet-stream";
+}
+
+// --------- Face-recognition annotations (RAM only) ----------
+// Populated by the host-side watcher via POST /annotate. Cleared on reboot.
+struct Annotation {
+  String filename;
+  String name;
+  float  dist;
+};
+static std::vector<Annotation> g_annotations;
+
 // Gallery page served at /. Polls /list every 5 s so new photos & audio
 // appear without a manual reload. DOM is built with createElement +
 // textContent + encodeURIComponent — never innerHTML — so a stray filename
@@ -77,6 +102,7 @@ static const char INDEX_HTML[] = R"HTML(<!doctype html>
  .toolbar a, .toolbar button{display:inline-flex;align-items:center;justify-content:center;width:1.6em;height:1.6em;border:0;border-radius:50%;background:rgba(255,255,255,.08);color:#eee;font-size:.9em;text-decoration:none;cursor:pointer;line-height:1}
  .toolbar .dl:hover{background:#363}
  .toolbar .del:hover{background:#a33}
+ .annot{padding:.35em .5em;font-size:.78em;background:rgba(80,180,80,.12);color:#9f9;border-top:1px solid #2a4;font-family:ui-monospace,monospace;text-align:center}
  .empty{opacity:.5;font-style:italic;padding:.4em 0}
 </style></head><body>
 <h1>owl</h1>
@@ -111,13 +137,20 @@ function makeMeta(card, url, name, recountFn){
   m.appendChild(cap); m.appendChild(makeToolbar(card, url, name, recountFn));
   return m;
 }
-function makePhotoCard(n, recountFn){
+function makePhotoCard(n, recountFn, annot){
   const url = '/photo/' + encodeURIComponent(n);
   const card = document.createElement('div'); card.className='card';
   const a = document.createElement('a'); a.className='view'; a.href=url; a.target='_blank';
   const img = document.createElement('img'); img.src=url; img.loading='lazy'; img.alt=n;
   a.appendChild(img);
   card.appendChild(a); card.appendChild(makeMeta(card, url, n, recountFn));
+  if (annot && annot.name) {
+    const conf = Math.max(0, Math.min(100, Math.round((1 - annot.dist) * 100)));
+    const tag = document.createElement('div');
+    tag.className = 'annot';
+    tag.textContent = annot.name + ' — ' + conf + '% match';
+    card.appendChild(tag);
+  }
   return card;
 }
 function makeAudioCard(n, recountFn){
@@ -129,8 +162,12 @@ function makeAudioCard(n, recountFn){
 }
 async function refresh(){
   try{
-    const r = await fetch('/list', {cache:'no-store'});
-    const data = await r.json();
+    const [listR, annotR] = await Promise.all([
+      fetch('/list', {cache:'no-store'}),
+      fetch('/annotations', {cache:'no-store'}),
+    ]);
+    const data = await listR.json();
+    const annot = await annotR.json();
     const gp = document.getElementById('gp');
     const ga = document.getElementById('ga');
     const pc = document.getElementById('pc');
@@ -146,7 +183,7 @@ async function refresh(){
       d.textContent='no photos yet — short-press BOOT to capture';
       gp.appendChild(d);
     } else {
-      for(const n of data.photos) gp.appendChild(makePhotoCard(n, recount));
+      for(const n of data.photos) gp.appendChild(makePhotoCard(n, recount, annot[n]));
     }
     if(!data.audio.length){
       const d = document.createElement('div'); d.className='empty';
@@ -529,8 +566,17 @@ void setup() {
     }
   }
 
-  // HTTP routes. Audio support and combined-list shape arrive in Step 8.
+  // GET / — try /web/index.html on SD first; if missing, fall back to the
+  // INDEX_HTML embedded above. This lets users iterate UI by dropping new
+  // files into /web/ on the SD card without reflashing the firmware.
   g_http.on("/", []() {
+    File f = SD_MMC.open("/web/index.html", FILE_READ);
+    if (f && !f.isDirectory()) {
+      g_http.streamFile(f, "text/html");
+      f.close();
+      return;
+    }
+    if (f) f.close();
     g_http.send(200, "text/html", INDEX_HTML);
   });
   g_http.on("/list", []() {
@@ -568,6 +614,40 @@ void setup() {
     body += "]}";
     g_http.send(200, "application/json", body);
   });
+  // POST /annotate?photo=img_NNNNNN.jpg&name=person1&dist=0.566
+  // Upserts an annotation for one photo. Body params via form-urlencoded.
+  g_http.on("/annotate", HTTP_POST, []() {
+    String photo = g_http.arg("photo");
+    String name  = g_http.arg("name");
+    String distS = g_http.arg("dist");
+    if (photo.length() == 0 || name.length() == 0 ||
+        photo.indexOf('/') >= 0 || photo.indexOf("..") >= 0) {
+      g_http.send(400, "text/plain", "missing or invalid params\n");
+      return;
+    }
+    float dist = distS.toFloat();
+    for (auto& a : g_annotations) {
+      if (a.filename == photo) { a.name = name; a.dist = dist;
+                                 g_http.send(200, "text/plain", "updated\n"); return; }
+    }
+    g_annotations.push_back({photo, name, dist});
+    g_http.send(201, "text/plain", "added\n");
+  });
+
+  // GET /annotations — JSON map of photo filename → {name, dist}.
+  g_http.on("/annotations", HTTP_GET, []() {
+    String body = "{";
+    bool first = true;
+    for (auto& a : g_annotations) {
+      if (!first) body += ",";
+      body += "\""; body += a.filename; body += "\":{\"name\":\"";
+      body += a.name; body += "\",\"dist\":"; body += String(a.dist, 3); body += "}";
+      first = false;
+    }
+    body += "}";
+    g_http.send(200, "application/json", body);
+  });
+
   // /photo/<name> + /audio/<name> — GET streams the file, DELETE removes it.
   // Reject any name containing '/' or '..' so the lookup can't escape its dir.
   g_http.onNotFound([]() {
@@ -580,6 +660,22 @@ void setup() {
     } else if (uri.startsWith("/audio/")) {
       dir = AUDIO_DIR;  contentType = "audio/wav";  name = uri.substring(7);
     } else {
+      // Try to serve as a top-level static file from /web/<filename>.
+      // Only matches paths like "/style.css", "/app.js" — single segment,
+      // no traversal. Sub-paths like "/assets/foo.js" not supported here.
+      if (g_http.method() == HTTP_GET &&
+          uri.length() > 1 &&
+          uri.indexOf('/', 1) < 0 &&
+          uri.indexOf("..") < 0) {
+        String full = String("/web") + uri;
+        File f = SD_MMC.open(full, FILE_READ);
+        if (f && !f.isDirectory()) {
+          g_http.streamFile(f, contentTypeFor(uri));
+          f.close();
+          return;
+        }
+        if (f) f.close();
+      }
       g_http.send(404, "text/plain", "not found\n");
       return;
     }
@@ -621,6 +717,12 @@ void setup() {
       }
       if (SD_MMC.remove(full)) {
         Serial.printf("[http] deleted %s\n", full.c_str());
+        // Drop any annotation tied to this photo.
+        if (dir == PHOTOS_DIR) {
+          for (auto it = g_annotations.begin(); it != g_annotations.end(); ++it) {
+            if (it->filename == name) { g_annotations.erase(it); break; }
+          }
+        }
         g_http.send(204, "text/plain", "");
       } else {
         Serial.printf("[http] delete failed %s\n", full.c_str());

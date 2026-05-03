@@ -11,3 +11,14 @@ build/
 *.bin
 *.elf
 *.map
+
+# Python (face-recognition watcher)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Watcher runtime data — contains personal photos / downloaded captures
+known_faces/
+.watcher_cache/
+
