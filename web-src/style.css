@@ -1,24 +1,541 @@
-body{font:14px/1.4 system-ui,sans-serif;margin:1.5em;background:#0a0a0a;color:#eee}
-h1{font-size:1.1em;font-weight:600;margin:0 0 .8em}
-h2{font-size:.95em;font-weight:600;margin:1.5em 0 .6em;opacity:.8}
-.count{opacity:.6;font-weight:400}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.6em}
-.alist{display:flex;flex-direction:column;gap:.5em;max-width:640px}
-.card{position:relative;border:1px solid #222;background:#111}
-.card:hover{background:#1a1a2a;border-color:#345}
-.card .view{display:block;text-decoration:none;color:#9cf}
-.card img{display:block;width:100%;height:auto;background:#000;aspect-ratio:4/3}
-.card audio{display:block;width:100%}
-.meta{display:flex;align-items:center;gap:.4em;padding:.35em .5em .4em}
-.meta .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,monospace;font-size:.8em;color:#bbb}
-.toolbar{display:flex;gap:.25em;opacity:0;transition:opacity .15s}
-.card:hover .toolbar{opacity:1}
-.toolbar a, .toolbar button{display:inline-flex;align-items:center;justify-content:center;width:1.6em;height:1.6em;border:0;border-radius:50%;background:rgba(255,255,255,.08);color:#eee;font-size:.9em;text-decoration:none;cursor:pointer;line-height:1}
-.toolbar .dl:hover{background:#363}
-.toolbar .del:hover{background:#a33}
-.annot{padding:.35em .5em;font-size:.78em;background:rgba(80,180,80,.12);color:#9f9;border-top:1px solid #2a4;font-family:ui-monospace,monospace;text-align:center}
-.empty{opacity:.5;font-style:italic;padding:.4em 0}
+/* ============================================================
+   owl — field gallery
+   Aesthetic: archival / field-journal. Ink-on-paper at night.
+   Typography: classical serif headlines, monospace metadata,
+   refined sans for body. System fonts only (offline-safe).
+   ============================================================ */
 
-/* DEV-only banner */
-#devbar{position:fixed;top:0;left:0;right:0;background:#a3801a;color:#000;text-align:center;font-size:.75em;padding:.25em;font-weight:600;z-index:99}
-body.dev{padding-top:1.6em}
+:root {
+  /* ---- typography ---- */
+  --serif: 'Iowan Old Style', 'Hoefler Text', 'Charter', Cambria, Georgia, serif;
+  --sans:  'Avenir Next', Avenir, 'Helvetica Neue', system-ui, sans-serif;
+  --mono:  ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  /* ---- palette ---- */
+  --ink:        #14181d;            /* deep slate, the page */
+  --ink-2:      #1b2027;            /* card surface */
+  --ink-3:      #232a33;            /* card hover surface */
+  --rule:       #2c333d;            /* dividers, faint borders */
+  --rule-2:     #3a4250;            /* slightly stronger borders */
+  --paper:      #ede2cb;            /* cream — primary text on dark */
+  --paper-soft: #d4c8ad;            /* dimmer paper for body copy */
+  --umber:      #7c7565;            /* muted metadata text */
+  --umber-2:    #585345;            /* even more muted */
+  --gold:       #c9a76b;            /* warm ornament accent */
+  --gold-deep:  #a08550;            /* darker variant for borders */
+  --moss:       #9aaa68;            /* match stamp green */
+  --vermillion: #c9533f;            /* delete / negative */
+
+  /* ---- motion ---- */
+  --ease: cubic-bezier(.2,.7,.2,1);
+}
+
+/* ============================================================
+   Reset, body, ambient texture
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--paper-soft);
+  background: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  padding: 4rem 1.5rem 6rem;
+  min-height: 100vh;
+  position: relative;
+}
+@media (min-width: 720px) { body { padding: 5rem 3rem 8rem; } }
+@media (min-width: 1100px) { body { padding: 6rem 5rem 10rem; } }
+
+/* film grain — subtle inline-SVG noise for depth */
+#grain {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: .06;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='1.4' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .9 0 0 0 0 .87 0 0 0 0 .8 0 0 0 1 0'/></filter><rect width='220' height='220' filter='url(%23n)'/></svg>");
+}
+body > * { position: relative; z-index: 1; }
+
+/* dev banner */
+#devbar {
+  position: fixed; top: 0; left: 0; right: 0;
+  background: var(--gold); color: var(--ink);
+  font-family: var(--mono);
+  font-size: .68rem;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  text-align: center;
+  padding: .45rem .8rem;
+  z-index: 100;
+  border-bottom: 1px solid var(--gold-deep);
+}
+body.dev { padding-top: 5rem; }
+
+/* ============================================================
+   Page-load reveal
+   ============================================================ */
+
+@keyframes lift {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.masthead, .rule, .leaf, .colophon {
+  animation: lift 700ms var(--ease) backwards;
+}
+.rule { animation-delay: 120ms; }
+.leaf:nth-of-type(1) { animation-delay: 180ms; }
+.leaf:nth-of-type(2) { animation-delay: 280ms; }
+.colophon { animation-delay: 380ms; }
+
+/* ============================================================
+   Masthead
+   ============================================================ */
+
+.masthead {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: .9rem;
+  flex-wrap: wrap;
+}
+
+.wordmark {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: clamp(3.5rem, 9vw, 6.5rem);
+  line-height: .85;
+  letter-spacing: -.025em;
+  color: var(--paper);
+  margin: 0;
+  font-style: italic;
+}
+.wordmark .o { letter-spacing: -.04em; }
+.wordmark .w { font-style: normal; padding: 0 .02em; }
+.wordmark .l { letter-spacing: -.06em; padding-right: .04em; }
+
+.vol {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 1.05rem;
+  color: var(--gold);
+  align-self: end;
+  padding-bottom: 1rem;
+  letter-spacing: .005em;
+}
+
+.tagline {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 1.05rem;
+  line-height: 1.55;
+  color: var(--paper-soft);
+  margin: 1rem 0 0;
+  max-width: 56ch;
+}
+
+/* ============================================================
+   Decorative rule with centered ornament
+   ============================================================ */
+
+.rule {
+  border: 0;
+  height: 1px;
+  background: var(--rule);
+  position: relative;
+  margin: 3.5rem auto;
+  max-width: 1200px;
+}
+
+.rule::after {
+  content: attr(data-mark);
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--ink);
+  color: var(--gold);
+  padding: 0 1rem;
+  font-family: var(--serif);
+  font-size: 1rem;
+  letter-spacing: .3em;
+}
+
+/* ============================================================
+   Leaf (section)
+   ============================================================ */
+
+.leaf {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.leaf-head {
+  display: flex;
+  align-items: baseline;
+  gap: .8rem;
+  margin-bottom: 1.6rem;
+}
+
+.leaf-num {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 1.5rem;
+  color: var(--gold);
+  font-weight: 500;
+  width: 1.6rem;
+  text-align: right;
+}
+
+.leaf-title {
+  font-family: var(--serif);
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: -.005em;
+  color: var(--paper);
+}
+
+.leaf-rule {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, var(--rule) 0%, var(--rule) 80%, transparent 100%);
+  align-self: center;
+  margin: 0 .5rem;
+}
+
+.leaf-count {
+  font-family: var(--mono);
+  font-size: .68rem;
+  letter-spacing: .25em;
+  text-transform: uppercase;
+  color: var(--umber);
+}
+
+/* ============================================================
+   Photo grid + cards
+   ============================================================ */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 1.6rem;
+}
+
+.card {
+  position: relative;
+  background: var(--ink-2);
+  border: 1px solid var(--rule);
+  transition: border-color 220ms var(--ease), background 220ms var(--ease), transform 280ms var(--ease);
+}
+
+.card:hover {
+  background: var(--ink-3);
+  border-color: var(--gold-deep);
+  transform: translateY(-2px);
+}
+
+/* contact-sheet corner registration marks — appear on hover */
+.card::before, .card::after {
+  content: '';
+  position: absolute;
+  width: 10px; height: 10px;
+  border: 1px solid var(--gold);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 220ms var(--ease);
+}
+.card::before { top: -4px;    left: -4px;    border-right: 0; border-bottom: 0; }
+.card::after  { bottom: -4px;  right: -4px;  border-left: 0;  border-top: 0;    }
+.card:hover::before, .card:hover::after { opacity: 1; }
+
+.card .view {
+  position: relative;
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+
+.card img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 4/3;
+  object-fit: cover;
+  background: #000;
+  filter: contrast(1.04) saturate(.95);
+  transition: filter 220ms var(--ease);
+}
+.card:hover img { filter: contrast(1.08) saturate(1.05); }
+
+/* ============================================================
+   Card meta row
+   ============================================================ */
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .55rem .75rem .65rem;
+  border-top: 1px solid var(--rule);
+}
+
+.meta .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: .7rem;
+  letter-spacing: .04em;
+  color: var(--umber);
+  text-transform: lowercase;
+}
+
+/* ============================================================
+   Toolbar — minimal squared icon buttons
+   ============================================================ */
+
+.toolbar {
+  display: flex;
+  gap: .25rem;
+  opacity: 0;
+  transition: opacity 200ms var(--ease);
+}
+.card:hover .toolbar { opacity: 1; }
+.card:focus-within .toolbar { opacity: 1; }
+
+.toolbar a, .toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  border: 1px solid var(--rule-2);
+  background: transparent;
+  color: var(--paper-soft);
+  font-family: var(--mono);
+  font-size: .85rem;
+  text-decoration: none;
+  cursor: pointer;
+  line-height: 1;
+  transition: all 150ms var(--ease);
+}
+.toolbar a:focus-visible, .toolbar button:focus-visible {
+  outline: 1px solid var(--gold);
+  outline-offset: 2px;
+}
+.toolbar .dl:hover {
+  color: var(--ink);
+  background: var(--paper);
+  border-color: var(--paper);
+}
+.toolbar .del:hover {
+  color: var(--paper);
+  background: var(--vermillion);
+  border-color: var(--vermillion);
+}
+.toolbar button:disabled { opacity: .4; cursor: progress; }
+
+/* ============================================================
+   Match stamp — rotated library-stamp aesthetic
+   Sits inside .view so it overlays the photograph.
+   ============================================================ */
+
+.annot {
+  position: absolute;
+  bottom: .7rem;
+  right: .7rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  padding: .42rem .65rem .5rem;
+  background: rgba(154, 170, 104, 0.94);
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  outline: 1px solid rgba(0, 0, 0, .35);
+  outline-offset: 2px;
+  transform: rotate(-3deg);
+  box-shadow: 1px 2px 6px rgba(0, 0, 0, .45);
+  pointer-events: none;
+  font-family: var(--mono);
+  text-transform: uppercase;
+}
+.annot .stamp-mark {
+  font-size: .55rem;
+  letter-spacing: .25em;
+  font-weight: 700;
+  opacity: .75;
+  margin-bottom: .15rem;
+}
+.annot .stamp-name {
+  font-size: .72rem;
+  letter-spacing: .12em;
+  font-weight: 700;
+  font-family: var(--serif);
+  font-style: italic;
+  text-transform: none;
+}
+.annot .stamp-conf {
+  font-size: .55rem;
+  letter-spacing: .25em;
+  opacity: .85;
+  margin-top: .15rem;
+}
+
+/* ============================================================
+   Audio list — gold-accented entries, tape-archive feel
+   ============================================================ */
+
+.alist {
+  display: flex;
+  flex-direction: column;
+  gap: .8rem;
+  max-width: 760px;
+}
+
+.card.audio-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 1.1rem;
+  padding: .8rem 1rem .9rem 1.1rem;
+  border-left: 3px solid var(--gold-deep);
+  transform: none;
+}
+.card.audio-card:hover {
+  transform: none;
+  border-left-color: var(--gold);
+}
+.card.audio-card::before, .card.audio-card::after { display: none; }
+
+/* Decorative tape-reel glyph drawn in CSS */
+.reel {
+  position: relative;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 50%;
+  border: 1.5px solid var(--gold-deep);
+  flex-shrink: 0;
+  transition: border-color 220ms var(--ease), transform 8s linear;
+}
+.card.audio-card:hover .reel {
+  border-color: var(--gold);
+  transform: rotate(360deg);
+}
+.reel::before {
+  content: '';
+  position: absolute;
+  inset: 32%;
+  border: 1px solid var(--gold-deep);
+  border-radius: 50%;
+}
+.reel::after {
+  content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 1.5px; height: 65%;
+  background: var(--gold-deep);
+  transform: translate(-50%, -50%);
+}
+
+.audio-body {
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+  min-width: 0;
+}
+
+.card.audio-card audio {
+  width: 100%;
+  height: 32px;
+  filter: invert(.86) hue-rotate(190deg);
+}
+
+.card.audio-card .meta {
+  border-top: 0;
+  padding: 0;
+}
+
+/* ============================================================
+   Empty states
+   ============================================================ */
+
+.empty {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: .98rem;
+  color: var(--umber);
+  padding: 1.2rem .25rem;
+  border: 1px dashed var(--rule);
+  text-align: center;
+  letter-spacing: .005em;
+}
+
+/* ============================================================
+   Colophon
+   ============================================================ */
+
+.colophon {
+  max-width: 1200px;
+  margin: 5rem auto 0;
+  text-align: center;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: .9rem;
+  color: var(--umber);
+  letter-spacing: .005em;
+}
+.colophon .seal {
+  display: block;
+  font-size: 1.4rem;
+  color: var(--gold);
+  margin-bottom: .6rem;
+  font-style: normal;
+}
+.colophon p { margin: 0; }
+.colophon .hint {
+  font-style: normal;
+  font-family: var(--mono);
+  font-size: .72rem;
+  letter-spacing: .15em;
+  text-transform: uppercase;
+  color: var(--umber-2);
+  display: block;
+  margin-top: .3rem;
+}
+.colophon kbd {
+  font-family: var(--mono);
+  font-size: .7rem;
+  letter-spacing: .12em;
+  padding: .1rem .4rem;
+  border: 1px solid var(--rule-2);
+  border-radius: 2px;
+  color: var(--paper-soft);
+  background: var(--ink-2);
+}
+
+/* ============================================================
+   Reduced motion
+   ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0ms !important;
+  }
+}
