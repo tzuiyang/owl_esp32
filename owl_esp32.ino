@@ -53,6 +53,21 @@ static const char* AP_PASSWORD = "owlowlowl";   // ≥8 chars for WPA2
 // --------- HTTP server ----------
 static WebServer g_http(80);
 
+// MIME-type guess for serving static UI files from SD's /web/ folder.
+static const char* contentTypeFor(const String& path) {
+  int dot = path.lastIndexOf('.');
+  if (dot < 0) return "application/octet-stream";
+  String ext = path.substring(dot);
+  if (ext == ".html" || ext == ".htm") return "text/html";
+  if (ext == ".css")   return "text/css";
+  if (ext == ".js")    return "application/javascript";
+  if (ext == ".json")  return "application/json";
+  if (ext == ".ico")   return "image/x-icon";
+  if (ext == ".png")   return "image/png";
+  if (ext == ".svg")   return "image/svg+xml";
+  return "application/octet-stream";
+}
+
 // --------- Face-recognition annotations (RAM only) ----------
 // Populated by the host-side watcher via POST /annotate. Cleared on reboot.
 struct Annotation {
@@ -551,8 +566,17 @@ void setup() {
     }
   }
 
-  // HTTP routes. Audio support and combined-list shape arrive in Step 8.
+  // GET / — try /web/index.html on SD first; if missing, fall back to the
+  // INDEX_HTML embedded above. This lets users iterate UI by dropping new
+  // files into /web/ on the SD card without reflashing the firmware.
   g_http.on("/", []() {
+    File f = SD_MMC.open("/web/index.html", FILE_READ);
+    if (f && !f.isDirectory()) {
+      g_http.streamFile(f, "text/html");
+      f.close();
+      return;
+    }
+    if (f) f.close();
     g_http.send(200, "text/html", INDEX_HTML);
   });
   g_http.on("/list", []() {
@@ -636,6 +660,22 @@ void setup() {
     } else if (uri.startsWith("/audio/")) {
       dir = AUDIO_DIR;  contentType = "audio/wav";  name = uri.substring(7);
     } else {
+      // Try to serve as a top-level static file from /web/<filename>.
+      // Only matches paths like "/style.css", "/app.js" — single segment,
+      // no traversal. Sub-paths like "/assets/foo.js" not supported here.
+      if (g_http.method() == HTTP_GET &&
+          uri.length() > 1 &&
+          uri.indexOf('/', 1) < 0 &&
+          uri.indexOf("..") < 0) {
+        String full = String("/web") + uri;
+        File f = SD_MMC.open(full, FILE_READ);
+        if (f && !f.isDirectory()) {
+          g_http.streamFile(f, contentTypeFor(uri));
+          f.close();
+          return;
+        }
+        if (f) f.close();
+      }
       g_http.send(404, "text/plain", "not found\n");
       return;
     }

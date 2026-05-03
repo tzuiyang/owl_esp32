@@ -1,0 +1,24 @@
+body{font:14px/1.4 system-ui,sans-serif;margin:1.5em;background:#0a0a0a;color:#eee}
+h1{font-size:1.1em;font-weight:600;margin:0 0 .8em}
+h2{font-size:.95em;font-weight:600;margin:1.5em 0 .6em;opacity:.8}
+.count{opacity:.6;font-weight:400}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.6em}
+.alist{display:flex;flex-direction:column;gap:.5em;max-width:640px}
+.card{position:relative;border:1px solid #222;background:#111}
+.card:hover{background:#1a1a2a;border-color:#345}
+.card .view{display:block;text-decoration:none;color:#9cf}
+.card img{display:block;width:100%;height:auto;background:#000;aspect-ratio:4/3}
+.card audio{display:block;width:100%}
+.meta{display:flex;align-items:center;gap:.4em;padding:.35em .5em .4em}
+.meta .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,monospace;font-size:.8em;color:#bbb}
+.toolbar{display:flex;gap:.25em;opacity:0;transition:opacity .15s}
+.card:hover .toolbar{opacity:1}
+.toolbar a, .toolbar button{display:inline-flex;align-items:center;justify-content:center;width:1.6em;height:1.6em;border:0;border-radius:50%;background:rgba(255,255,255,.08);color:#eee;font-size:.9em;text-decoration:none;cursor:pointer;line-height:1}
+.toolbar .dl:hover{background:#363}
+.toolbar .del:hover{background:#a33}
+.annot{padding:.35em .5em;font-size:.78em;background:rgba(80,180,80,.12);color:#9f9;border-top:1px solid #2a4;font-family:ui-monospace,monospace;text-align:center}
+.empty{opacity:.5;font-style:italic;padding:.4em 0}
+
+/* DEV-only banner */
+#devbar{position:fixed;top:0;left:0;right:0;background:#a3801a;color:#000;text-align:center;font-size:.75em;padding:.25em;font-weight:600;z-index:99}
+body.dev{padding-top:1.6em}
