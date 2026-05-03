@@ -101,10 +101,14 @@ def match_photo(path: Path, known_encs, known_names, tolerance):
 def macos_notify(title: str, body: str) -> None:
     if sys.platform != "darwin":
         return
-    subprocess.run(
-        ["osascript", "-e", f'display notification {body!r} with title {title!r}'],
-        check=False,
-    )
+
+    # AppleScript only accepts double-quoted strings; Python's !r emits
+    # single-quoted ones, which crashes osascript. Build the string by hand.
+    def applescript_quote(s: str) -> str:
+        return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    script = f"display notification {applescript_quote(body)} with title {applescript_quote(title)}"
+    subprocess.run(["osascript", "-e", script], check=False)
 
 
 def main() -> int:
