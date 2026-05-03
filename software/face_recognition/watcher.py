@@ -79,6 +79,20 @@ def download_photo(host: str, name: str, dest: Path) -> bool:
     return True
 
 
+def post_annotation(host: str, photo: str, name: str, dist: float) -> None:
+    """POST a match back to the device so it shows up under the photo in the gallery."""
+    try:
+        r = requests.post(
+            f"http://{host}/annotate",
+            data={"photo": photo, "name": name, "dist": f"{dist:.4f}"},
+            timeout=5,
+        )
+        if r.status_code not in (200, 201):
+            print(f"  [warn] annotate {photo}: HTTP {r.status_code}", file=sys.stderr)
+    except requests.RequestException as e:
+        print(f"  [warn] annotate {photo}: {e}", file=sys.stderr)
+
+
 def match_photo(path: Path, known_encs, known_names, tolerance):
     """Return list of (name, distance) for every known face matched in this photo."""
     try:
@@ -165,6 +179,10 @@ def main() -> int:
             if not matches:
                 print(f"  {name}  →  no known face")
                 continue
+            # Post the BEST match back to the device (lowest distance among
+            # all detected faces). This is what shows up in the gallery UI.
+            best = min(matches, key=lambda m: m[1])
+            post_annotation(args.host, name, best[0], best[1])
             for who, dist in matches:
                 print(f"  {name}  →  {who}  (dist={dist:.3f})")
                 if not args.no_notify:
