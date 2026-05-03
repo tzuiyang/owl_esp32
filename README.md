@@ -19,11 +19,12 @@ A Seeed XIAO ESP32-S3 Sense turned into a self-contained WiFi photo + audio devi
    - [Cleaning up](#4-cleaning-up)
 4. [Buttons & LED reference](#buttons--led-reference)
 5. [Web interface](#web-interface)
-6. [HTTP API](#http-api-curl)
-7. [Serial monitor (debugging)](#serial-monitor-debugging)
-8. [Troubleshooting](#troubleshooting)
-9. [Configuration knobs](#configuration-knobs)
-10. [Limitations](#limitations)
+6. [Face recognition (optional companion)](#face-recognition-optional-companion)
+7. [HTTP API](#http-api-curl)
+8. [Serial monitor (debugging)](#serial-monitor-debugging)
+9. [Troubleshooting](#troubleshooting)
+10. [Configuration knobs](#configuration-knobs)
+11. [Limitations](#limitations)
 
 ---
 
@@ -230,6 +231,99 @@ Available URLs once you're joined to `owl`:
 | `http://owl.local/list` | JSON listing: `{"photos":[...], "audio":[...]}`. |
 | `http://owl.local/photo/<name>` | One JPEG. `GET` to view, `DELETE` to remove. |
 | `http://owl.local/audio/<name>` | One WAV. Same verbs. The actively-recording WAV returns 503. |
+| `http://owl.local/annotate` | `POST` form-encoded `photo=...&name=...&dist=...` — used by the [face-recognition watcher](#face-recognition-optional-companion). |
+| `http://owl.local/annotations` | `GET` JSON map of `{photo: {name, dist}}` — gallery JS reads this to render the green match banners. |
+
+---
+
+## Face recognition (optional companion)
+
+A host-side Python "watcher" can pull each new photo from the device, run face recognition against a small local database of known people, and tag matched photos in the gallery UI. The ESP32 itself does no AI work — all encoding and matching happens on your Mac.
+
+```
+ESP32                Mac (watcher.py)
+─────                ────────────────
+  /list   ◄─────────  poll every N seconds
+  /photo  ─────────►  download new JPEGs
+                      run face_recognition
+                      compare against ./known_faces/
+  /annotate ◄───────  POST best match per photo
+  /annotations ────►  gallery JS reads & renders
+```
+
+### One-time setup
+
+```bash
+# install once (requires internet on regular WiFi)
+pip3 install face_recognition requests
+
+# create the database
+mkdir -p known_faces
+# drop reference photos into named subfolders:
+#   known_faces/<person_name>/1.jpg
+#   known_faces/<person_name>/2.jpg
+# the folder name becomes the label shown in the alert + gallery
+```
+
+Folder layout the watcher expects:
+
+```
+known_faces/
+  Alice/
+    1.jpg
+    2.jpg
+  Bob/
+    portrait.jpg
+```
+
+### Run the watcher
+
+Join the `owl` WiFi on your Mac first, then:
+
+```bash
+python3 software/face_recognition/watcher.py --host 192.168.4.1 --interval 5 --catchup
+```
+
+### What the flags mean
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--host` | `owl.local` | The device's hostname or IP. Use `192.168.4.1` if mDNS isn't resolving. |
+| `--interval` | `10` | **How often (in seconds) to poll the device for new photos.** Lower = more responsive but more network chatter. `5` is good for active testing; `30` is fine for passive monitoring. |
+| `--catchup` | off | Process every photo currently on the SD, not just ones that arrive after startup. Use this when first running, after renaming `known_faces/` folders, or after a firmware reflash (which clears RAM-only annotations). |
+| `--tolerance` | `0.6` | Face-distance threshold. Lower = stricter match. Default is `face_recognition`'s library default. Owl-camera photos with motion blur may need to **tighten** this to `0.5` to avoid false positives. |
+| `--no-notify` | off | Suppress macOS notification banners (terminal output only). |
+
+### What success looks like
+
+In the watcher terminal:
+
+```
+loading known faces from known_faces/...
+  loaded Alice: 1.jpg
+  loaded Bob: portrait.jpg
+  total: 2 encoding(s) for 2 person/people
+
+polling http://192.168.4.1/list every 5s. Ctrl-C to stop.
+
+  img_000004.jpg  →  Alice  (dist=0.412)
+```
+
+In the gallery (`http://owl.local/`), the matched photo gets a green banner under it:
+
+```
+img_000004.jpg
+Alice — 59% match
+```
+
+A macOS notification banner pops up when a match fires.
+
+### Caveats
+
+- **Annotations live in RAM on the ESP32.** Reboot the device → all annotations disappear. The watcher will re-annotate when it next sees those photos (use `--catchup` once after a reboot to rebuild quickly).
+- **One annotation per photo.** Group photos with multiple known faces only get tagged with the *closest* match.
+- **Watcher must be on the `owl` WiFi** to talk to the device — and while joined, the Mac has no internet. Once installed, the recognition pipeline runs fully offline.
+- **Camera quality affects accuracy.** Motion blur and low light push real same-person matches up to 0.55+ distance, eating into the safety margin. Tighten `--tolerance` if you start seeing false positives.
 
 ---
 
